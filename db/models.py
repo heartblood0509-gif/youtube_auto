@@ -1,0 +1,34 @@
+"""SQLAlchemy ORM 모델"""
+
+from sqlalchemy import Column, String, Float, Text, DateTime
+from sqlalchemy.orm import declarative_base
+import uuid
+import datetime
+
+Base = declarative_base()
+
+
+class Job(Base):
+    __tablename__ = "jobs"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    status = Column(String, default="pending")
+    progress = Column(Float, default=0.0)
+    current_step = Column(String, default="")
+
+    # 입력 파라미터
+    topic = Column(Text, default="")
+    style = Column(String, default="cinematic")
+    tts_engine = Column(String, default="edge")
+    tts_speed = Column(Float, default=1.1)
+    title = Column(Text, default="")
+    script_json = Column(Text, default="[]")
+    bgm_volume = Column(Float, default=0.12)
+
+    # 출력
+    video_path = Column(String, nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    # 시간
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)

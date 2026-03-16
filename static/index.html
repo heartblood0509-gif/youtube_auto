@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 쇼츠 자동 제작</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>AI 쇼츠 자동 제작</h1>
+            <p class="subtitle">주제만 입력하면 영상이 완성됩니다</p>
+        </header>
+
+        <!-- Step 1: 주제 입력 -->
+        <section id="step-input" class="card">
+            <h2>1. 주제 & 설정</h2>
+
+            <div class="form-group">
+                <label for="topic">주제</label>
+                <input type="text" id="topic" placeholder="예: 피부 각질 제거 팁" maxlength="200">
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="style">이미지 스타일</label>
+                    <select id="style">
+                        <option value="cinematic">시네마틱</option>
+                        <option value="realistic">실사</option>
+                        <option value="anime">애니메이션</option>
+                        <option value="3d">3D 렌더</option>
+                        <option value="illustration">일러스트</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="tts-engine">TTS 엔진</label>
+                    <select id="tts-engine">
+                        <option value="edge">Edge TTS (무료)</option>
+                        <option value="typecast">Typecast (고품질)</option>
+                        <option value="qwen">Qwen (로컬)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="tts-speed">TTS 속도: <span id="speed-val">1.1</span>x</label>
+                    <input type="range" id="tts-speed" min="0.8" max="1.5" step="0.1" value="1.1">
+                </div>
+
+                <div class="form-group">
+                    <label for="bgm-volume">BGM 볼륨: <span id="bgm-val">12</span>%</label>
+                    <input type="range" id="bgm-volume" min="0" max="50" step="1" value="12">
+                </div>
+            </div>
+
+            <button id="btn-generate" class="btn-primary" onclick="generateScript()">
+                대본 생성하기
+            </button>
+        </section>
+
+        <!-- Step 2: 대본 확인/수정 -->
+        <section id="step-script" class="card hidden">
+            <h2>2. 대본 확인</h2>
+
+            <div class="form-group">
+                <label for="title-text">제목</label>
+                <input type="text" id="title-text" maxlength="16">
+            </div>
+
+            <div id="script-lines"></div>
+
+            <div class="btn-group">
+                <button class="btn-secondary" onclick="generateScript()">다시 생성</button>
+                <button class="btn-primary" onclick="createJob()">이미지 생성 시작</button>
+            </div>
+        </section>
+
+        <!-- 로딩 -->
+        <section id="step-loading" class="card hidden">
+            <div class="loading">
+                <div class="spinner"></div>
+                <p id="loading-text">처리 중...</p>
+            </div>
+        </section>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

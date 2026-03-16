@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>작업 이력 - AI 쇼츠</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>작업 이력</h1>
+            <a href="/" class="btn-secondary btn-small">새 영상 만들기</a>
+        </header>
+
+        <div id="job-list"></div>
+    </div>
+
+    <script>
+    async function loadJobs() {
+        const resp = await fetch('/api/jobs/');
+        const jobs = await resp.json();
+        const list = document.getElementById('job-list');
+
+        if (jobs.length === 0) {
+            list.innerHTML = '<p class="empty">아직 작업이 없습니다</p>';
+            return;
+        }
+
+        list.innerHTML = jobs.map(job => `
+            <div class="card job-card">
+                <div class="job-info">
+                    <span class="job-status status-${job.status}">${statusLabel(job.status)}</span>
+                    <span class="job-id">${job.job_id}</span>
+                    <span class="job-date">${new Date(job.created_at).toLocaleString('ko-KR')}</span>
+                </div>
+                <p class="job-step">${job.current_step}</p>
+                ${job.video_url ? `<a href="${job.video_url}" class="btn-small btn-primary" download>다운로드</a>` : ''}
+            </div>
+        `).join('');
+    }
+
+    function statusLabel(status) {
+        const labels = {
+            pending: '대기',
+            generating_images: '이미지 생성',
+            preview_ready: '미리보기',
+            awaiting_confirmation: '확인 대기',
+            generating_tts: 'TTS 생성',
+            assembling_video: '영상 조립',
+            completed: '완료',
+            failed: '실패',
+        };
+        return labels[status] || status;
+    }
+
+    loadJobs();
+    </script>
+</body>
+</html>

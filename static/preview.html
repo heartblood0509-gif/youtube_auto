@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>미리보기 - AI 쇼츠</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>이미지 미리보기</h1>
+            <p class="subtitle" id="preview-title"></p>
+        </header>
+
+        <div id="preview-grid" class="preview-grid"></div>
+
+        <div class="btn-group center">
+            <a href="/" class="btn-secondary">처음으로</a>
+            <button id="btn-confirm" class="btn-primary" onclick="confirmAndRender()">
+                영상 제작 시작
+            </button>
+        </div>
+    </div>
+
+    <script src="/static/js/preview.js"></script>
+</body>
+</html>

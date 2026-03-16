@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>진행 상태 - AI 쇼츠</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>영상 제작 중</h1>
+        </header>
+
+        <section class="card">
+            <div class="progress-container">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+                </div>
+                <p class="progress-text">
+                    <span id="progress-percent">0%</span>
+                    <span id="progress-step">준비 중...</span>
+                </p>
+            </div>
+
+            <!-- 완료 시 표시 -->
+            <div id="completed-section" class="hidden">
+                <p class="success-text">영상이 완성되었습니다!</p>
+                <div class="btn-group center">
+                    <a id="download-link" class="btn-primary" download>영상 다운로드</a>
+                    <a href="/" class="btn-secondary">새 영상 만들기</a>
+                </div>
+                <video id="video-preview" controls class="video-preview"></video>
+            </div>
+
+            <!-- 에러 시 표시 -->
+            <div id="error-section" class="hidden">
+                <p class="error-text" id="error-message"></p>
+                <a href="/" class="btn-secondary">다시 시도</a>
+            </div>
+        </section>
+    </div>
+
+    <script src="/static/js/status.js"></script>
+</body>
+</html>
