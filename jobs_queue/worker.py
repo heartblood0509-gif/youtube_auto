@@ -78,6 +78,8 @@ async def render_video_for_job(job_id: str):
             "title": job.title,
             "tts_engine": job.tts_engine,
             "tts_speed": job.tts_speed,
+            "voice_id": job.voice_id,
+            "emotion": job.emotion,
             "bgm_path": bgm_path,
             "bgm_volume": job.bgm_volume,
             "bgm_start_sec": job.bgm_start_sec or 0.0,

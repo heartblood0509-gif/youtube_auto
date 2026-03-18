@@ -70,20 +70,34 @@
                     <select id="tts-engine">
                         <option value="edge">Edge TTS (무료)</option>
                         <option value="typecast">Typecast (고품질)</option>
-                        <option value="qwen">Qwen (로컬)</option>
                     </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="tts-voice">음성 선택</label>
+                    <div class="voice-select-row">
+                        <select id="tts-voice"></select>
+                        <button type="button" id="voice-preview-btn" title="미리듣기">▶</button>
+                    </div>
                 </div>
             </div>
 
-            <div class="form-row">
-                <div class="form-group">
-                    <label for="tts-speed">TTS 속도: <span id="speed-val">1.1</span>x</label>
-                    <input type="range" id="tts-speed" min="0.8" max="1.5" step="0.1" value="1.1">
+            <div id="emotion-section" class="form-group hidden">
+                <label>감정/톤</label>
+                <div id="emotion-buttons" class="emotion-btn-group">
+                    <p class="text-dim">성우를 선택하면 감정 목록이 표시됩니다.</p>
                 </div>
+                <input type="hidden" id="tts-emotion" value="normal">
+            </div>
 
-                <div class="form-group">
-                    <label for="bgm-volume">BGM 볼륨: <span id="bgm-val">12</span>%</label>
-                    <input type="range" id="bgm-volume" min="0" max="50" step="1" value="12">
+            <div class="form-group">
+                <label for="tts-speed">TTS 속도: <span id="speed-val">1.0</span>배</label>
+                <input type="range" id="tts-speed" min="0.5" max="2.0" step="0.1" value="1.0">
+                <div class="range-ticks">
+                    <span style="position:absolute;left:0%">0.5배</span>
+                    <span style="position:absolute;left:33.3%">1배</span>
+                    <span style="position:absolute;left:66.7%">1.5배</span>
+                    <span style="position:absolute;right:0">2배</span>
                 </div>
             </div>
 
@@ -95,13 +109,20 @@
                 </div>
             </div>
 
-            <!-- BGM 시작 지점 -->
-            <div id="bgm-start-section" class="form-group hidden">
-                <label>BGM 시작 지점: <span id="bgm-start-val">0:00</span></label>
-                <input type="range" id="bgm-start" min="0" max="100" step="0.1" value="0">
-                <div class="bgm-start-input-row">
-                    <input type="number" id="bgm-start-sec" min="0" step="0.1" value="0" class="bgm-time-input">
-                    <span class="text-dim">초</span>
+            <!-- BGM 볼륨 + 시작 지점 -->
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="bgm-volume">BGM 볼륨: <span id="bgm-val">12</span>%</label>
+                    <input type="range" id="bgm-volume" min="0" max="50" step="1" value="12">
+                </div>
+
+                <div id="bgm-start-section" class="form-group hidden">
+                    <label>BGM 시작 지점: <span id="bgm-start-val">0:00</span></label>
+                    <input type="range" id="bgm-start" min="0" max="100" step="0.1" value="0">
+                    <div class="bgm-start-input-row">
+                        <input type="number" id="bgm-start-sec" min="0" step="0.1" value="0" class="bgm-time-input">
+                        <span class="text-dim">초</span>
+                    </div>
                 </div>
             </div>
 

@@ -16,7 +16,6 @@ class StylePreset(str, Enum):
 class TTSEngine(str, Enum):
     EDGE = "edge"
     TYPECAST = "typecast"
-    QWEN = "qwen"
 
 
 class MotionType(str, Enum):
@@ -103,7 +102,9 @@ class JobCreateRequest(BaseModel):
     topic: str
     style: StylePreset
     tts_engine: TTSEngine = TTSEngine.EDGE
-    tts_speed: float = Field(default=1.1, ge=0.8, le=1.5)
+    tts_speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    voice_id: Optional[str] = None
+    emotion: Optional[str] = None
     title: str
     lines: list[ScriptLine]
     bgm_volume: float = Field(default=0.12, ge=0.0, le=0.5)

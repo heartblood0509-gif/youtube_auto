@@ -82,6 +82,7 @@ input[type="text"], select {
     border: 1px solid var(--border);
     border-radius: 8px;
     color: var(--text);
+    color-scheme: dark;
     font-size: 15px;
     outline: none;
     transition: border-color 0.2s;
@@ -89,10 +90,85 @@ input[type="text"], select {
 input[type="text"]:focus, select:focus {
     border-color: var(--primary);
 }
+select option {
+    background: var(--surface);
+    color: var(--text);
+}
+
+.voice-select-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.voice-select-row select {
+    flex: 1;
+}
+#voice-preview-btn {
+    width: 42px;
+    height: 42px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--primary);
+    font-size: 16px;
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s;
+    flex-shrink: 0;
+}
+#voice-preview-btn:hover {
+    background: var(--surface-hover);
+    border-color: var(--primary);
+}
+#voice-preview-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
 
 input[type="range"] {
     width: 100%;
     accent-color: var(--primary);
+}
+.emotion-btn-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.emotion-btn {
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background: var(--bg);
+    color: var(--text-dim);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.emotion-btn:hover {
+    border-color: var(--primary);
+    color: var(--text);
+}
+.emotion-btn.active {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: #000;
+    font-weight: 600;
+}
+.range-ticks {
+    position: relative;
+    height: 18px;
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-dim);
+}
+.range-ticks span {
+    transform: translateX(-50%);
+    white-space: nowrap;
+}
+.range-ticks span:first-child {
+    transform: translateX(0);
+}
+.range-ticks span:last-child {
+    transform: translateX(0);
 }
 
 /* 버튼 */

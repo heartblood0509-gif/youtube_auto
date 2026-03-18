@@ -3,6 +3,129 @@
  * Step 1: 주제 & 설정 → Step 2: 제목 선택 → Step 3: 나레이션 확인 → Step 4: 최종 확인 → Job 생성
  */
 
+// ── TTS 음성 옵션 (엔진별) ──
+const VOICE_OPTIONS = {
+    edge: [
+        { value: "ko-KR-HyunsuMultilingualNeural", label: "현수 (남성, 다국어)" },
+        { value: "ko-KR-InJoonNeural", label: "인준 (남성)" },
+        { value: "ko-KR-SunHiNeural", label: "선희 (여성)" },
+    ],
+    typecast: [
+        { value: "tc_62e8f21e979b3860fe2f6a24", label: "혜리 (여성)" },
+        { value: "tc_611c3f692fac944dff493a04", label: "세희 (여성)" },
+        { value: "tc_6568164fe05ddffee8b0e271", label: "시연 (여성)" },
+        { value: "tc_622964d6255364be41659078", label: "세나 (여성)" },
+        { value: "tc_61659c5818732016a95fe763", label: "류은 (여성)" },
+        { value: "tc_632293f759d649937b97f323", label: "진우 (남성)" },
+        { value: "tc_668f4f533ea5c6ce5e43fd48", label: "우성 (남성)" },
+        { value: "tc_6059dad0b83880769a50502f", label: "창수 (남성)" },
+        { value: "tc_61de29497924994f5abd68db", label: "세진 (남성)" },
+    ],
+};
+
+function updateVoiceOptions() {
+    const engine = document.getElementById('tts-engine').value;
+    const voiceSelect = document.getElementById('tts-voice');
+    const options = VOICE_OPTIONS[engine] || [];
+    voiceSelect.innerHTML = options.map(opt =>
+        `<option value="${opt.value}">${opt.label}</option>`
+    ).join('');
+
+    const emotionSection = document.getElementById('emotion-section');
+    if (engine === 'typecast') {
+        emotionSection.classList.remove('hidden');
+        loadEmotions(voiceSelect.value);
+    } else {
+        emotionSection.classList.add('hidden');
+        document.getElementById('tts-emotion').value = 'normal';
+    }
+}
+
+async function loadEmotions(voiceId) {
+    const container = document.getElementById('emotion-buttons');
+    const hiddenInput = document.getElementById('tts-emotion');
+    hiddenInput.value = 'normal';
+
+    if (!voiceId) {
+        container.innerHTML = '<p class="text-dim">성우를 선택하세요.</p>';
+        return;
+    }
+
+    container.innerHTML = '<p class="text-dim">감정 목록 로딩 중...</p>';
+
+    try {
+        const resp = await fetch(`/api/tts/emotions?voice_id=${encodeURIComponent(voiceId)}`);
+        if (!resp.ok) throw new Error('조회 실패');
+        const emotions = await resp.json();
+
+        container.innerHTML = emotions.map(e =>
+            `<button type="button" class="emotion-btn${e.value === 'normal' ? ' active' : ''}" data-emotion="${e.value}">${e.label}</button>`
+        ).join('');
+
+        container.querySelectorAll('.emotion-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                container.querySelectorAll('.emotion-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                hiddenInput.value = btn.dataset.emotion;
+            });
+        });
+    } catch (e) {
+        container.innerHTML = '<p class="text-dim">감정 목록을 불러올 수 없습니다.</p>';
+    }
+}
+
+document.getElementById('tts-voice').addEventListener('change', function() {
+    if (document.getElementById('tts-engine').value === 'typecast') {
+        loadEmotions(this.value);
+    }
+});
+
+document.getElementById('tts-engine').addEventListener('change', updateVoiceOptions);
+updateVoiceOptions();
+
+// ── 음성 미리듣기 ──
+let previewAudio = null;
+
+document.getElementById('voice-preview-btn').addEventListener('click', async function() {
+    const btn = this;
+    const engine = document.getElementById('tts-engine').value;
+    const voiceId = document.getElementById('tts-voice').value;
+
+    if (!voiceId) return;
+
+    // 이미 재생 중이면 정지
+    if (previewAudio && !previewAudio.paused) {
+        previewAudio.pause();
+        previewAudio = null;
+        btn.textContent = '▶';
+        return;
+    }
+
+    btn.textContent = '⏳';
+    btn.disabled = true;
+
+    try {
+        const speed = document.getElementById('tts-speed').value;
+        const emotion = engine === 'typecast' ? document.getElementById('tts-emotion').value : 'normal';
+        const url = `/api/tts/preview?engine=${encodeURIComponent(engine)}&voice_id=${encodeURIComponent(voiceId)}&speed=${speed}&emotion=${encodeURIComponent(emotion)}`;
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`미리듣기 실패: ${resp.status}`);
+
+        const blob = await resp.blob();
+        const audioUrl = URL.createObjectURL(blob);
+        previewAudio = new Audio(audioUrl);
+        previewAudio.onended = () => { btn.textContent = '▶'; };
+        previewAudio.play();
+        btn.textContent = '⏹';
+    } catch (e) {
+        console.error(e);
+        alert('미리듣기 생성에 실패했습니다.');
+        btn.textContent = '▶';
+    } finally {
+        btn.disabled = false;
+    }
+});
+
 // 슬라이더 값 표시
 document.getElementById('tts-speed').addEventListener('input', function() {
     document.getElementById('speed-val').textContent = this.value;
@@ -284,6 +407,8 @@ async function createJob() {
         style: document.getElementById('style').value,
         tts_engine: document.getElementById('tts-engine').value,
         tts_speed: parseFloat(document.getElementById('tts-speed').value),
+        voice_id: document.getElementById('tts-voice').value,
+        emotion: document.getElementById('tts-engine').value === 'typecast' ? document.getElementById('tts-emotion').value : null,
         title: title,
         lines: scriptData.lines,
         bgm_volume: parseInt(document.getElementById('bgm-volume').value) / 100,

@@ -42,6 +42,8 @@ async def create_job(
         style=request.style.value,
         tts_engine=request.tts_engine.value,
         tts_speed=request.tts_speed,
+        voice_id=request.voice_id,
+        emotion=request.emotion,
         title=request.title,
         script_json=json.dumps(
             [line.model_dump() for line in request.lines], ensure_ascii=False

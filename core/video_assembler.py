@@ -7,11 +7,10 @@ import os
 
 from core.audio_utils import (
     run,
-    speed_up_sentences,
     build_aligned_narration,
 )
 from core.subtitle_utils import split_subtitle_natural, split_title
-from core.tts_engines import generate_tts_edge, generate_tts_qwen, generate_tts_typecast
+from core.tts_engines import generate_tts_edge, generate_tts_typecast
 from core.image_pipeline import apply_ken_burns
 from config import settings
 
@@ -64,9 +63,11 @@ async def assemble_shorts(job_id: str, config: dict, progress_callback=None):
 
     engine = config.get("tts_engine", "edge")
     tts_speed = config.get("tts_speed", 1.1)
+    voice_id = config.get("voice_id")
+    emotion = config.get("emotion")
 
     if engine == "edge":
-        narration_path, timings = await generate_tts_edge(tts_dir, sentences)
+        narration_path, timings = await generate_tts_edge(tts_dir, sentences, voice=voice_id, speed=tts_speed)
         clip_durations = [t["duration"] + 0.5 for t in timings]
         clip_starts = []
         t_acc = 0.0
@@ -74,15 +75,17 @@ async def assemble_shorts(job_id: str, config: dict, progress_callback=None):
             clip_starts.append(round(t_acc, 2))
             t_acc += d
         total_dur = round(t_acc, 2)
-    else:
-        tts_funcs = {"typecast": generate_tts_typecast, "qwen": generate_tts_qwen}
-        tts_func = tts_funcs.get(engine)
-        if not tts_func:
-            raise ValueError(f"알 수 없는 TTS 엔진: {engine}")
-        await asyncio.to_thread(tts_func, tts_dir, sentences)
-        sentence_durations = await asyncio.to_thread(
-            speed_up_sentences, tts_dir, sentences, tts_speed
+    elif engine == "typecast":
+        await asyncio.to_thread(
+            generate_tts_typecast, tts_dir, sentences, voice_id=voice_id, speed=tts_speed, emotion=emotion
         )
+        sentence_durations = [
+            t["duration"] for t in json.loads(
+                open(os.path.join(tts_dir, "timings_raw.json"), encoding="utf-8").read()
+            )
+        ]
+    else:
+        raise ValueError(f"알 수 없는 TTS 엔진: {engine}")
         clip_durations, clip_starts, total_dur = calculate_dynamic_clips_image(
             sentence_durations
         )

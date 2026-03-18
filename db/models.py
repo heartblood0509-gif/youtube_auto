@@ -21,6 +21,8 @@ class Job(Base):
     style = Column(String, default="cinematic")
     tts_engine = Column(String, default="edge")
     tts_speed = Column(Float, default=1.1)
+    voice_id = Column(String, nullable=True)
+    emotion = Column(String, nullable=True)
     title = Column(Text, default="")
     script_json = Column(Text, default="[]")
     bgm_volume = Column(Float, default=0.12)

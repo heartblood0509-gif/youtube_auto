@@ -24,6 +24,10 @@ def init_db():
             conn.execute(text("ALTER TABLE jobs ADD COLUMN bgm_filename VARCHAR"))
         if "bgm_start_sec" not in columns:
             conn.execute(text("ALTER TABLE jobs ADD COLUMN bgm_start_sec FLOAT DEFAULT 0.0"))
+        if "voice_id" not in columns:
+            conn.execute(text("ALTER TABLE jobs ADD COLUMN voice_id VARCHAR"))
+        if "emotion" not in columns:
+            conn.execute(text("ALTER TABLE jobs ADD COLUMN emotion VARCHAR"))
         conn.commit()
 
 
