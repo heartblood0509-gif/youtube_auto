@@ -1,6 +1,8 @@
 /**
  * 메인 페이지 - 멀티스텝 대본 생성
- * Step 1: 주제 & 설정 → Step 2: 제목 선택 → Step 3: 나레이션 확인 → Step 4: 최종 확인 → Job 생성
+ * Step 1: 주제 설정 → Step 2: 제목 선택 → Step 3: 나레이션 확인
+ * → Step 4: 이미지 스타일 → Step 5: 음성 설정 → Step 6: BGM 설정
+ * → Step 7: 최종 확인 → Job 생성
  */
 
 // ── TTS 음성 옵션 (엔진별) ──
@@ -23,151 +25,23 @@ const VOICE_OPTIONS = {
     ],
 };
 
-function updateVoiceOptions() {
-    const engine = document.getElementById('tts-engine').value;
-    const voiceSelect = document.getElementById('tts-voice');
-    const options = VOICE_OPTIONS[engine] || [];
-    voiceSelect.innerHTML = options.map(opt =>
-        `<option value="${opt.value}">${opt.label}</option>`
-    ).join('');
-
-    const emotionSection = document.getElementById('emotion-section');
-    if (engine === 'typecast') {
-        emotionSection.classList.remove('hidden');
-        loadEmotions(voiceSelect.value);
-    } else {
-        emotionSection.classList.add('hidden');
-        document.getElementById('tts-emotion').value = 'normal';
-    }
-}
-
-async function loadEmotions(voiceId) {
-    const container = document.getElementById('emotion-buttons');
-    const hiddenInput = document.getElementById('tts-emotion');
-    hiddenInput.value = 'normal';
-
-    if (!voiceId) {
-        container.innerHTML = '<p class="text-dim">성우를 선택하세요.</p>';
-        return;
-    }
-
-    container.innerHTML = '<p class="text-dim">감정 목록 로딩 중...</p>';
-
-    try {
-        const resp = await fetch(`/api/tts/emotions?voice_id=${encodeURIComponent(voiceId)}`);
-        if (!resp.ok) throw new Error('조회 실패');
-        const emotions = await resp.json();
-
-        container.innerHTML = emotions.map(e =>
-            `<button type="button" class="emotion-btn${e.value === 'normal' ? ' active' : ''}" data-emotion="${e.value}">${e.label}</button>`
-        ).join('');
-
-        container.querySelectorAll('.emotion-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                container.querySelectorAll('.emotion-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                hiddenInput.value = btn.dataset.emotion;
-            });
-        });
-    } catch (e) {
-        container.innerHTML = '<p class="text-dim">감정 목록을 불러올 수 없습니다.</p>';
-    }
-}
-
-document.getElementById('tts-voice').addEventListener('change', function() {
-    if (document.getElementById('tts-engine').value === 'typecast') {
-        loadEmotions(this.value);
-    }
-});
-
-document.getElementById('tts-engine').addEventListener('change', updateVoiceOptions);
-updateVoiceOptions();
-
-// ── 음성 미리듣기 ──
+// ── 상태 관리 ──
+let titleOptions = null;
+let selectedTitle = null;
+let narrationData = null;
+let scriptData = null;
+let bgmList = [];
+let selectedBgm = null;
+let bgmAudio = null;
+let bgmDuration = 0;
 let previewAudio = null;
 
-document.getElementById('voice-preview-btn').addEventListener('click', async function() {
-    const btn = this;
-    const engine = document.getElementById('tts-engine').value;
-    const voiceId = document.getElementById('tts-voice').value;
-
-    if (!voiceId) return;
-
-    // 이미 재생 중이면 정지
-    if (previewAudio && !previewAudio.paused) {
-        previewAudio.pause();
-        previewAudio = null;
-        btn.textContent = '▶';
-        return;
-    }
-
-    btn.textContent = '⏳';
-    btn.disabled = true;
-
-    try {
-        const speed = document.getElementById('tts-speed').value;
-        const emotion = engine === 'typecast' ? document.getElementById('tts-emotion').value : 'normal';
-        const url = `/api/tts/preview?engine=${encodeURIComponent(engine)}&voice_id=${encodeURIComponent(voiceId)}&speed=${speed}&emotion=${encodeURIComponent(emotion)}`;
-        const resp = await fetch(url);
-        if (!resp.ok) throw new Error(`미리듣기 실패: ${resp.status}`);
-
-        const blob = await resp.blob();
-        const audioUrl = URL.createObjectURL(blob);
-        previewAudio = new Audio(audioUrl);
-        previewAudio.onended = () => { btn.textContent = '▶'; };
-        previewAudio.play();
-        btn.textContent = '⏹';
-    } catch (e) {
-        console.error(e);
-        alert('미리듣기 생성에 실패했습니다.');
-        btn.textContent = '▶';
-    } finally {
-        btn.disabled = false;
-    }
-});
-
-// 슬라이더 값 표시
-document.getElementById('tts-speed').addEventListener('input', function() {
-    document.getElementById('speed-val').textContent = this.value;
-});
-document.getElementById('bgm-volume').addEventListener('input', function() {
-    document.getElementById('bgm-val').textContent = this.value;
-});
-
-// 카테고리 필드 토글
+// ── 카테고리 필드 토글 ──
 function toggleCategoryFields() {
     const category = document.getElementById('category').value;
     const cosmeticsFields = document.getElementById('cosmetics-fields');
     cosmeticsFields.style.display = category === 'cosmetics' ? 'block' : 'none';
 }
-
-// BGM 시작 지점 슬라이더/입력 동기화
-document.getElementById('bgm-start').addEventListener('input', function() {
-    const val = parseFloat(this.value);
-    document.getElementById('bgm-start-val').textContent = formatTime(val);
-    document.getElementById('bgm-start-sec').value = val.toFixed(1);
-});
-document.getElementById('bgm-start-sec').addEventListener('change', function() {
-    const val = parseFloat(this.value) || 0;
-    const clamped = Math.min(Math.max(val, 0), bgmDuration);
-    this.value = clamped.toFixed(1);
-    document.getElementById('bgm-start').value = clamped;
-    document.getElementById('bgm-start-val').textContent = formatTime(clamped);
-});
-
-// ──────────────────────────────────
-// 상태 관리
-// ──────────────────────────────────
-let titleOptions = null;
-let selectedTitle = null;
-let narrationData = null;
-let scriptData = null;
-
-// BGM 상태
-let bgmList = [];
-let selectedBgm = null;
-let bgmAudio = null;
-let bgmDuration = 0;
 
 function getCategoryPayload() {
     const category = document.getElementById('category').value;
@@ -234,12 +108,10 @@ function displayTitles(data) {
 function selectTitle(index) {
     selectedTitle = titleOptions.titles[index].title;
 
-    // 선택 시각 표시
     document.querySelectorAll('.title-option').forEach((el, i) => {
         el.classList.toggle('selected', i === index);
     });
 
-    // 자동으로 나레이션 생성
     generateNarration();
 }
 
@@ -289,12 +161,8 @@ function displayNarration(data) {
     document.getElementById('selected-title-display').value = selectedTitle;
 
     const roleLabels = {
-        hook: 'Hook',
-        problem: '문제',
-        insight: '핵심',
-        solution1: '해결 1',
-        solution2: '해결 2',
-        cta: 'CTA',
+        hook: 'Hook', problem: '문제', insight: '핵심',
+        solution1: '해결 1', solution2: '해결 2', cta: 'CTA',
     };
 
     const container = document.getElementById('narration-lines');
@@ -326,10 +194,10 @@ function regenerateNarration() {
 }
 
 // ──────────────────────────────────
-// Step 4: 이미지 프롬프트 생성
+// Step 4: 나레이션 확정 → 이미지 스타일 표시
 // ──────────────────────────────────
-async function approveNarration() {
-    // 편집된 나레이션 텍스트 수집
+function approveNarration() {
+    // 편집된 나레이션 텍스트 수집 & 검증
     const textInputs = document.querySelectorAll('#narration-lines .line-text');
     const narrationLines = Array.from(textInputs).map(input => input.value.trim());
 
@@ -338,14 +206,31 @@ async function approveNarration() {
         return;
     }
 
+    // 나레이션 텍스트 저장 (이미지 프롬프트 생성 시 사용)
+    window._approvedNarrationLines = narrationLines;
+
+    hideAllSteps();
+    document.getElementById('step-input').classList.remove('hidden');
+    document.getElementById('step-titles').classList.remove('hidden');
+    document.getElementById('step-narration').classList.remove('hidden');
+    document.getElementById('step-style').classList.remove('hidden');
+
+    // 이미지 프롬프트 결과 영역 숨김 (새로 생성해야 하므로)
+    document.getElementById('image-prompt-result').classList.add('hidden');
+}
+
+async function generateImagePrompts() {
+    const narrationLines = window._approvedNarrationLines;
+    if (!narrationLines) {
+        alert('나레이션을 먼저 확정해주세요');
+        return;
+    }
+
     showLoading('이미지 프롬프트 생성 중...');
 
     try {
         const style = document.getElementById('style').value;
-        const payload = {
-            narration_lines: narrationLines,
-            style,
-        };
+        const payload = { narration_lines: narrationLines, style };
 
         const resp = await fetch('/api/generate/image-prompts', {
             method: 'POST',
@@ -359,22 +244,23 @@ async function approveNarration() {
         }
 
         scriptData = await resp.json();
-        displayFinal(scriptData);
+        displayImagePrompts(scriptData);
     } catch (e) {
         alert('에러: ' + e.message);
         hideLoading();
     }
 }
 
-function displayFinal(data) {
+function displayImagePrompts(data) {
     hideLoading();
     hideAllSteps();
     document.getElementById('step-input').classList.remove('hidden');
     document.getElementById('step-titles').classList.remove('hidden');
     document.getElementById('step-narration').classList.remove('hidden');
-    document.getElementById('step-final').classList.remove('hidden');
+    document.getElementById('step-style').classList.remove('hidden');
 
     document.getElementById('title-text').value = selectedTitle;
+    document.getElementById('image-prompt-result').classList.remove('hidden');
 
     const container = document.getElementById('script-lines');
     container.innerHTML = data.lines.map((line, i) => `
@@ -390,17 +276,208 @@ function displayFinal(data) {
 }
 
 // ──────────────────────────────────
-// Step 5: Job 생성 (기존 로직 유지)
+// Step 5: 음성 설정
 // ──────────────────────────────────
-async function createJob() {
-    if (!scriptData) return;
+function confirmImagePrompts() {
+    if (!scriptData) {
+        alert('이미지 프롬프트를 먼저 생성해주세요');
+        return;
+    }
 
-    // 수정된 값 반영
-    const title = document.getElementById('title-text').value;
-    const textInputs = document.querySelectorAll('#step-final .line-text');
+    // 수정된 텍스트 반영
+    const textInputs = document.querySelectorAll('#script-lines .line-text');
     textInputs.forEach((input, i) => {
         scriptData.lines[i].text = input.value;
     });
+
+    hideAllSteps();
+    document.getElementById('step-input').classList.remove('hidden');
+    document.getElementById('step-titles').classList.remove('hidden');
+    document.getElementById('step-narration').classList.remove('hidden');
+    document.getElementById('step-style').classList.remove('hidden');
+    document.getElementById('step-tts').classList.remove('hidden');
+
+    // TTS 옵션 초기화
+    updateVoiceOptions();
+}
+
+// ── TTS 음성 옵션 ──
+function updateVoiceOptions() {
+    const engine = document.getElementById('tts-engine').value;
+    const voiceSelect = document.getElementById('tts-voice');
+    const options = VOICE_OPTIONS[engine] || [];
+    voiceSelect.innerHTML = options.map(opt =>
+        `<option value="${opt.value}">${opt.label}</option>`
+    ).join('');
+
+    const emotionSection = document.getElementById('emotion-section');
+    if (engine === 'typecast') {
+        emotionSection.classList.remove('hidden');
+        loadEmotions(voiceSelect.value);
+    } else {
+        emotionSection.classList.add('hidden');
+        document.getElementById('tts-emotion').value = 'normal';
+    }
+}
+
+async function loadEmotions(voiceId) {
+    const container = document.getElementById('emotion-buttons');
+    const hiddenInput = document.getElementById('tts-emotion');
+    hiddenInput.value = 'normal';
+
+    if (!voiceId) {
+        container.innerHTML = '<p class="text-dim">성우를 선택하세요.</p>';
+        return;
+    }
+
+    container.innerHTML = '<p class="text-dim">감정 목록 로딩 중...</p>';
+
+    try {
+        const resp = await fetch(`/api/tts/emotions?voice_id=${encodeURIComponent(voiceId)}`);
+        if (!resp.ok) throw new Error('조회 실패');
+        const emotions = await resp.json();
+
+        container.innerHTML = emotions.map(e =>
+            `<button type="button" class="emotion-btn${e.value === 'normal' ? ' active' : ''}" data-emotion="${e.value}">${e.label}</button>`
+        ).join('');
+
+        container.querySelectorAll('.emotion-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                container.querySelectorAll('.emotion-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                hiddenInput.value = btn.dataset.emotion;
+            });
+        });
+    } catch (e) {
+        container.innerHTML = '<p class="text-dim">감정 목록을 불러올 수 없습니다.</p>';
+    }
+}
+
+// ── TTS 이벤트 리스너 ──
+document.getElementById('tts-engine').addEventListener('change', updateVoiceOptions);
+document.getElementById('tts-voice').addEventListener('change', function() {
+    if (document.getElementById('tts-engine').value === 'typecast') {
+        loadEmotions(this.value);
+    }
+});
+document.getElementById('tts-speed').addEventListener('input', function() {
+    document.getElementById('speed-val').textContent = this.value;
+});
+
+// ── 음성 미리듣기 ──
+document.getElementById('voice-preview-btn').addEventListener('click', async function() {
+    const btn = this;
+    const engine = document.getElementById('tts-engine').value;
+    const voiceId = document.getElementById('tts-voice').value;
+
+    if (!voiceId) return;
+
+    if (previewAudio && !previewAudio.paused) {
+        previewAudio.pause();
+        previewAudio = null;
+        btn.textContent = '▶';
+        return;
+    }
+
+    btn.textContent = '⏳';
+    btn.disabled = true;
+
+    try {
+        const speed = document.getElementById('tts-speed').value;
+        const emotion = engine === 'typecast' ? document.getElementById('tts-emotion').value : 'normal';
+        const url = `/api/tts/preview?engine=${encodeURIComponent(engine)}&voice_id=${encodeURIComponent(voiceId)}&speed=${speed}&emotion=${encodeURIComponent(emotion)}`;
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`미리듣기 실패: ${resp.status}`);
+
+        const blob = await resp.blob();
+        const audioUrl = URL.createObjectURL(blob);
+        previewAudio = new Audio(audioUrl);
+        previewAudio.onended = () => { btn.textContent = '▶'; };
+        previewAudio.play();
+        btn.textContent = '⏹';
+    } catch (e) {
+        console.error(e);
+        alert('미리듣기 생성에 실패했습니다.');
+        btn.textContent = '▶';
+    } finally {
+        btn.disabled = false;
+    }
+});
+
+// ──────────────────────────────────
+// Step 6: BGM 설정
+// ──────────────────────────────────
+function confirmTtsSettings() {
+    hideAllSteps();
+    document.getElementById('step-input').classList.remove('hidden');
+    document.getElementById('step-titles').classList.remove('hidden');
+    document.getElementById('step-narration').classList.remove('hidden');
+    document.getElementById('step-style').classList.remove('hidden');
+    document.getElementById('step-tts').classList.remove('hidden');
+    document.getElementById('step-bgm').classList.remove('hidden');
+
+    // BGM 목록이 아직 로드되지 않았으면 로드
+    if (bgmList.length === 0) loadBgmList();
+}
+
+// ── BGM 이벤트 리스너 ──
+document.getElementById('bgm-volume').addEventListener('input', function() {
+    document.getElementById('bgm-val').textContent = this.value;
+});
+document.getElementById('bgm-start').addEventListener('input', function() {
+    const val = parseFloat(this.value);
+    document.getElementById('bgm-start-val').textContent = formatTime(val);
+    document.getElementById('bgm-start-sec').value = val.toFixed(1);
+});
+document.getElementById('bgm-start-sec').addEventListener('change', function() {
+    const val = parseFloat(this.value) || 0;
+    const clamped = Math.min(Math.max(val, 0), bgmDuration);
+    this.value = clamped.toFixed(1);
+    document.getElementById('bgm-start').value = clamped;
+    document.getElementById('bgm-start-val').textContent = formatTime(clamped);
+});
+
+// ──────────────────────────────────
+// Step 7: 최종 확인
+// ──────────────────────────────────
+function confirmBgmSettings() {
+    hideAllSteps();
+    document.getElementById('step-input').classList.remove('hidden');
+    document.getElementById('step-titles').classList.remove('hidden');
+    document.getElementById('step-narration').classList.remove('hidden');
+    document.getElementById('step-style').classList.remove('hidden');
+    document.getElementById('step-tts').classList.remove('hidden');
+    document.getElementById('step-bgm').classList.remove('hidden');
+    document.getElementById('step-confirm').classList.remove('hidden');
+
+    // 설정 요약 표시
+    const engine = document.getElementById('tts-engine').value;
+    const voiceLabel = document.getElementById('tts-voice').selectedOptions[0]?.text || '';
+    const emotion = document.getElementById('tts-emotion').value;
+    const speed = document.getElementById('tts-speed').value;
+    const style = document.getElementById('style').selectedOptions[0]?.text || '';
+    const bgm = selectedBgm ? selectedBgm.replace(/\.(mp3|wav|ogg)$/i, '') : '없음';
+    const bgmVol = document.getElementById('bgm-volume').value;
+
+    document.getElementById('confirm-summary').innerHTML = `
+        <div class="summary-grid">
+            <div class="summary-item"><span class="summary-label">제목</span><span>${escapeHtml(document.getElementById('title-text').value)}</span></div>
+            <div class="summary-item"><span class="summary-label">이미지 스타일</span><span>${style}</span></div>
+            <div class="summary-item"><span class="summary-label">TTS 엔진</span><span>${engine === 'edge' ? 'Edge TTS' : 'Typecast'}</span></div>
+            <div class="summary-item"><span class="summary-label">음성</span><span>${voiceLabel}</span></div>
+            <div class="summary-item"><span class="summary-label">감정/톤</span><span>${emotion}</span></div>
+            <div class="summary-item"><span class="summary-label">속도</span><span>${speed}배</span></div>
+            <div class="summary-item"><span class="summary-label">BGM</span><span>${escapeHtml(bgm)}</span></div>
+            <div class="summary-item"><span class="summary-label">BGM 볼륨</span><span>${bgmVol}%</span></div>
+        </div>
+    `;
+}
+
+// ──────────────────────────────────
+// Job 생성
+// ──────────────────────────────────
+async function createJob() {
+    if (!scriptData) return;
 
     const payload = {
         topic: document.getElementById('topic').value,
@@ -409,14 +486,14 @@ async function createJob() {
         tts_speed: parseFloat(document.getElementById('tts-speed').value),
         voice_id: document.getElementById('tts-voice').value,
         emotion: document.getElementById('tts-engine').value === 'typecast' ? document.getElementById('tts-emotion').value : null,
-        title: title,
+        title: document.getElementById('title-text').value,
         lines: scriptData.lines,
         bgm_volume: parseInt(document.getElementById('bgm-volume').value) / 100,
         bgm_filename: selectedBgm || null,
         bgm_start_sec: parseFloat(document.getElementById('bgm-start-sec').value) || 0,
     };
 
-    showLoading('이미지 생성 작업 등록 중...');
+    showLoading('작업 등록 중...');
 
     try {
         const resp = await fetch('/api/jobs/', {
@@ -442,7 +519,7 @@ async function createJob() {
 // 유틸리티
 // ──────────────────────────────────
 function hideAllSteps() {
-    ['step-input', 'step-titles', 'step-narration', 'step-final', 'step-loading'].forEach(id => {
+    ['step-input', 'step-titles', 'step-narration', 'step-style', 'step-tts', 'step-bgm', 'step-confirm', 'step-loading'].forEach(id => {
         document.getElementById(id).classList.add('hidden');
     });
 }
@@ -460,12 +537,9 @@ function hideLoading() {
 
 function motionLabel(motion) {
     const labels = {
-        zoom_in: 'Zoom In',
-        zoom_out: 'Zoom Out',
-        pan_left: 'Pan Left',
-        pan_right: 'Pan Right',
-        pan_up: 'Pan Up',
-        pan_down: 'Pan Down',
+        zoom_in: 'Zoom In', zoom_out: 'Zoom Out',
+        pan_left: 'Pan Left', pan_right: 'Pan Right',
+        pan_up: 'Pan Up', pan_down: 'Pan Down',
     };
     return labels[motion] || motion;
 }
@@ -517,7 +591,6 @@ function selectBgm(index) {
     bgmDuration = bgmList[index].duration;
     renderBgmList();
 
-    // 시작 지점 섹션 표시 + 초기화
     const startSection = document.getElementById('bgm-start-section');
     startSection.classList.remove('hidden');
     const slider = document.getElementById('bgm-start');
@@ -529,7 +602,6 @@ function selectBgm(index) {
 }
 
 function toggleBgmPreview(index) {
-    // 이미 재생 중이면 정지
     if (bgmAudio) {
         bgmAudio.pause();
         const wasPlaying = bgmAudio._bgmIdx === index;
@@ -542,7 +614,6 @@ function toggleBgmPreview(index) {
     bgmAudio = new Audio(bgm.url);
     bgmAudio._bgmIdx = index;
 
-    // 선택된 BGM의 시작 지점부터 재생
     if (selectedBgm === bgm.filename) {
         bgmAudio.currentTime = parseFloat(document.getElementById('bgm-start-sec').value) || 0;
     }
@@ -550,7 +621,6 @@ function toggleBgmPreview(index) {
     bgmAudio.play();
     renderBgmList();
 
-    // 15초 후 자동 정지
     bgmAudio._timeout = setTimeout(() => {
         if (bgmAudio) {
             bgmAudio.pause();
@@ -559,7 +629,6 @@ function toggleBgmPreview(index) {
         }
     }, 15000);
 
-    // 재생 끝나면 정리
     bgmAudio.addEventListener('ended', () => {
         bgmAudio = null;
         renderBgmList();
@@ -572,5 +641,5 @@ function formatTime(sec) {
     return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-// 페이지 로드 시 BGM 목록 가져오기
+// 페이지 로드 시 BGM 목록 미리 가져오기
 loadBgmList();

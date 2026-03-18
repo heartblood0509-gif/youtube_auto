@@ -153,6 +153,25 @@ input[type="range"] {
     color: #000;
     font-weight: 600;
 }
+.summary-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+.summary-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 10px 14px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+}
+.summary-label {
+    color: var(--text-dim);
+    font-size: 13px;
+}
+
 .range-ticks {
     position: relative;
     height: 18px;

@@ -84,14 +84,14 @@ async def assemble_shorts(job_id: str, config: dict, progress_callback=None):
                 open(os.path.join(tts_dir, "timings_raw.json"), encoding="utf-8").read()
             )
         ]
-    else:
-        raise ValueError(f"알 수 없는 TTS 엔진: {engine}")
         clip_durations, clip_starts, total_dur = calculate_dynamic_clips_image(
             sentence_durations
         )
         narration_path, timings = await asyncio.to_thread(
             build_aligned_narration, tts_dir, sentences, clip_starts, total_dur
         )
+    else:
+        raise ValueError(f"알 수 없는 TTS 엔진: {engine}")
 
     # ── Step 2: Ken Burns 모션 적용 ──
     _update(

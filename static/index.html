@@ -15,9 +15,9 @@
             <a href="https://github.com/orioncactus/pretendard/releases" target="_blank" rel="noopener" class="btn-secondary btn-small">Pretendard 폰트 다운로드</a>
         </header>
 
-        <!-- Step 1: 주제 & 카테고리 입력 -->
+        <!-- Step 1: 주제 설정 -->
         <section id="step-input" class="card">
-            <h2>1. 주제 & 설정</h2>
+            <h2>1. 주제 설정</h2>
 
             <div class="form-group">
                 <label for="category">카테고리</label>
@@ -53,18 +53,70 @@
                 </div>
             </div>
 
-            <div class="form-row">
-                <div class="form-group">
-                    <label for="style">이미지 스타일</label>
-                    <select id="style">
-                        <option value="cinematic">시네마틱</option>
-                        <option value="realistic">실사</option>
-                        <option value="anime">애니메이션</option>
-                        <option value="3d">3D 렌더</option>
-                        <option value="illustration">일러스트</option>
-                    </select>
-                </div>
+            <button id="btn-generate" class="btn-primary" onclick="generateTitles()">
+                제목 생성하기
+            </button>
+        </section>
 
+        <!-- Step 2: 제목 선택 -->
+        <section id="step-titles" class="card hidden">
+            <h2>2. 제목 선택</h2>
+            <p class="subtitle">마음에 드는 제목을 클릭하세요</p>
+            <div id="title-options"></div>
+            <div class="btn-group">
+                <button class="btn-secondary" onclick="generateTitles()">다시 생성</button>
+            </div>
+        </section>
+
+        <!-- Step 3: 나레이션 확인 -->
+        <section id="step-narration" class="card hidden">
+            <h2>3. 나레이션 확인</h2>
+            <div class="form-group">
+                <label>선택된 제목</label>
+                <input type="text" id="selected-title-display" readonly>
+            </div>
+            <div id="narration-lines"></div>
+            <div class="btn-group">
+                <button class="btn-secondary" onclick="regenerateNarration()">다시 생성</button>
+                <button class="btn-primary" onclick="approveNarration()">나레이션 확정</button>
+            </div>
+        </section>
+
+        <!-- Step 4: 이미지 스타일 + 프롬프트 -->
+        <section id="step-style" class="card hidden">
+            <h2>4. 이미지 스타일</h2>
+
+            <div class="form-group">
+                <label for="style">이미지 스타일</label>
+                <select id="style">
+                    <option value="cinematic">시네마틱</option>
+                    <option value="realistic">실사</option>
+                    <option value="anime">애니메이션</option>
+                    <option value="3d">3D 렌더</option>
+                    <option value="illustration">일러스트</option>
+                </select>
+            </div>
+
+            <button class="btn-primary" onclick="generateImagePrompts()">이미지 프롬프트 생성</button>
+
+            <div id="image-prompt-result" class="hidden">
+                <div class="form-group">
+                    <label for="title-text">제목</label>
+                    <input type="text" id="title-text" maxlength="16">
+                </div>
+                <div id="script-lines"></div>
+                <div class="btn-group">
+                    <button class="btn-secondary" onclick="generateImagePrompts()">프롬프트 다시 생성</button>
+                    <button class="btn-primary" onclick="confirmImagePrompts()">다음: 음성 설정</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Step 5: TTS 설정 -->
+        <section id="step-tts" class="card hidden">
+            <h2>5. 음성 설정</h2>
+
+            <div class="form-row">
                 <div class="form-group">
                     <label for="tts-engine">TTS 엔진</label>
                     <select id="tts-engine">
@@ -101,7 +153,13 @@
                 </div>
             </div>
 
-            <!-- BGM 선택 -->
+            <button class="btn-primary" onclick="confirmTtsSettings()">다음: BGM 설정</button>
+        </section>
+
+        <!-- Step 6: BGM 설정 -->
+        <section id="step-bgm" class="card hidden">
+            <h2>6. BGM 설정</h2>
+
             <div class="form-group">
                 <label>BGM 선택</label>
                 <div id="bgm-list" class="bgm-grid">
@@ -109,7 +167,6 @@
                 </div>
             </div>
 
-            <!-- BGM 볼륨 + 시작 지점 -->
             <div class="form-row">
                 <div class="form-group">
                     <label for="bgm-volume">BGM 볼륨: <span id="bgm-val">12</span>%</label>
@@ -126,50 +183,14 @@
                 </div>
             </div>
 
-            <button id="btn-generate" class="btn-primary" onclick="generateTitles()">
-                제목 생성하기
-            </button>
+            <button class="btn-primary" onclick="confirmBgmSettings()">다음: 최종 확인</button>
         </section>
 
-        <!-- Step 2: 제목 선택 -->
-        <section id="step-titles" class="card hidden">
-            <h2>2. 제목 선택</h2>
-            <p class="subtitle">마음에 드는 제목을 클릭하세요</p>
-            <div id="title-options"></div>
-            <div class="btn-group">
-                <button class="btn-secondary" onclick="generateTitles()">다시 생성</button>
-            </div>
-        </section>
-
-        <!-- Step 3: 나레이션 확인 -->
-        <section id="step-narration" class="card hidden">
-            <h2>3. 나레이션 확인</h2>
-            <div class="form-group">
-                <label>선택된 제목</label>
-                <input type="text" id="selected-title-display" readonly>
-            </div>
-            <div id="narration-lines"></div>
-            <div class="btn-group">
-                <button class="btn-secondary" onclick="regenerateNarration()">다시 생성</button>
-                <button class="btn-primary" onclick="approveNarration()">나레이션 확정</button>
-            </div>
-        </section>
-
-        <!-- Step 4: 최종 확인 (이미지 프롬프트 + 모션) -->
-        <section id="step-final" class="card hidden">
-            <h2>4. 최종 확인</h2>
-
-            <div class="form-group">
-                <label for="title-text">제목</label>
-                <input type="text" id="title-text" maxlength="16">
-            </div>
-
-            <div id="script-lines"></div>
-
-            <div class="btn-group">
-                <button class="btn-secondary" onclick="approveNarration()">이미지 프롬프트 다시 생성</button>
-                <button class="btn-primary" onclick="createJob()">이미지 생성 시작</button>
-            </div>
+        <!-- Step 7: 최종 확인 -->
+        <section id="step-confirm" class="card hidden">
+            <h2>7. 최종 확인</h2>
+            <div id="confirm-summary"></div>
+            <button class="btn-primary" onclick="createJob()">영상 생성 시작</button>
         </section>
 
         <!-- 로딩 -->
