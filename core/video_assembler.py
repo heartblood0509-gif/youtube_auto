@@ -1,5 +1,6 @@
 """이미지 기반 YouTube Shorts 영상 조립 파이프라인"""
 
+import asyncio
 import subprocess
 import json
 import os
@@ -22,11 +23,12 @@ def get_duration(filepath):
         shell=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     return float(json.loads(probe.stdout)["format"]["duration"])
 
 
-def calculate_dynamic_clips_image(sentence_durations, buffer=0.5):
+def calculate_dynamic_clips_image(sentence_durations, buffer=0.0):
     """이미지 기반 클립 길이 계산 (소스 영상 제약 없음)"""
     clip_durations = []
     clip_starts = []
@@ -39,7 +41,7 @@ def calculate_dynamic_clips_image(sentence_durations, buffer=0.5):
     return clip_durations, clip_starts, round(t, 2)
 
 
-def assemble_shorts(job_id: str, config: dict, progress_callback=None):
+async def assemble_shorts(job_id: str, config: dict, progress_callback=None):
     """
     메인 파이프라인: 이미지 + TTS → 최종 9:16 쇼츠 영상.
 
@@ -64,7 +66,7 @@ def assemble_shorts(job_id: str, config: dict, progress_callback=None):
     tts_speed = config.get("tts_speed", 1.1)
 
     if engine == "edge":
-        narration_path, timings = generate_tts_edge(tts_dir, sentences)
+        narration_path, timings = await generate_tts_edge(tts_dir, sentences)
         clip_durations = [t["duration"] + 0.5 for t in timings]
         clip_starts = []
         t_acc = 0.0
@@ -72,28 +74,21 @@ def assemble_shorts(job_id: str, config: dict, progress_callback=None):
             clip_starts.append(round(t_acc, 2))
             t_acc += d
         total_dur = round(t_acc, 2)
-
-    elif engine == "typecast":
-        generate_tts_typecast(tts_dir, sentences)
-        sentence_durations = speed_up_sentences(tts_dir, sentences, tts_speed)
-        clip_durations, clip_starts, total_dur = calculate_dynamic_clips_image(
-            sentence_durations
-        )
-        narration_path, timings = build_aligned_narration(
-            tts_dir, sentences, clip_starts, total_dur
-        )
-
-    elif engine == "qwen":
-        generate_tts_qwen(tts_dir, sentences)
-        sentence_durations = speed_up_sentences(tts_dir, sentences, tts_speed)
-        clip_durations, clip_starts, total_dur = calculate_dynamic_clips_image(
-            sentence_durations
-        )
-        narration_path, timings = build_aligned_narration(
-            tts_dir, sentences, clip_starts, total_dur
-        )
     else:
-        raise ValueError(f"알 수 없는 TTS 엔진: {engine}")
+        tts_funcs = {"typecast": generate_tts_typecast, "qwen": generate_tts_qwen}
+        tts_func = tts_funcs.get(engine)
+        if not tts_func:
+            raise ValueError(f"알 수 없는 TTS 엔진: {engine}")
+        await asyncio.to_thread(tts_func, tts_dir, sentences)
+        sentence_durations = await asyncio.to_thread(
+            speed_up_sentences, tts_dir, sentences, tts_speed
+        )
+        clip_durations, clip_starts, total_dur = calculate_dynamic_clips_image(
+            sentence_durations
+        )
+        narration_path, timings = await asyncio.to_thread(
+            build_aligned_narration, tts_dir, sentences, clip_starts, total_dur
+        )
 
     # ── Step 2: Ken Burns 모션 적용 ──
     _update(
@@ -103,7 +98,8 @@ def assemble_shorts(job_id: str, config: dict, progress_callback=None):
     clip_files = []
     for i, (img_path, motion, dur) in enumerate(zip(images, motions, clip_durations)):
         clip_path = os.path.join(temp_dir, f"clip_{i:02d}.mp4")
-        apply_ken_burns(
+        await asyncio.to_thread(
+            apply_ken_burns,
             image_path=img_path,
             output_path=clip_path,
             motion_type=motion,
@@ -130,37 +126,41 @@ def assemble_shorts(job_id: str, config: dict, progress_callback=None):
             f.write(f"file '{clip}'\n")
 
     concat_out = os.path.join(temp_dir, "concat_raw.mp4")
-    run(
+    await asyncio.to_thread(
+        run,
         f'ffmpeg -y -f concat -safe 0 -i "{concat_list}" '
-        f'-c:v libx264 -preset fast -crf 18 "{concat_out}"'
+        f'-c:v libx264 -preset fast -crf 18 "{concat_out}"',
     )
 
     # ── Step 4: 오디오 믹싱 ──
     _update(progress_callback, job_id, "assembling_video", 0.80, "오디오 믹싱 중...")
 
     audio_out = os.path.join(temp_dir, "mixed_audio.mp4")
-    vid_duration = get_duration(concat_out)
+    vid_duration = await asyncio.to_thread(get_duration, concat_out)
 
     bgm_path = config.get("bgm_path")
     bgm_vol = config.get("bgm_volume", 0.12)
+    bgm_start = config.get("bgm_start_sec", 0.0)
     has_bgm = bgm_path and os.path.exists(bgm_path)
 
     if has_bgm:
-        run(
+        await asyncio.to_thread(
+            run,
             f'ffmpeg -y -i "{concat_out}" -i "{narration_path}" -i "{bgm_path}" '
             f'-filter_complex "'
             f"[1:a]volume=1.0[narr];"
-            f"[2:a]atrim=0:{vid_duration},volume={bgm_vol}[bgm];"
+            f"[2:a]atrim={bgm_start}:{bgm_start + vid_duration},asetpts=PTS-STARTPTS,volume={bgm_vol}[bgm];"
             f'[narr][bgm]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]'
             f'" '
             f'-map 0:v -map "[aout]" -c:v copy -c:a aac -b:a 192k '
-            f'-shortest "{audio_out}"'
+            f'-shortest "{audio_out}"',
         )
     else:
-        run(
+        await asyncio.to_thread(
+            run,
             f'ffmpeg -y -i "{concat_out}" -i "{narration_path}" '
             f"-map 0:v -map 1:a -c:v copy -c:a aac -b:a 192k "
-            f'-shortest "{audio_out}"'
+            f'-shortest "{audio_out}"',
         )
 
     # ── Step 5: 자막 + 타이틀 오버레이 ──
@@ -175,13 +175,21 @@ def assemble_shorts(job_id: str, config: dict, progress_callback=None):
     h = settings.TARGET_HEIGHT  # 1920
     sq_y = (h - sq) // 2  # 420
 
-    sub_y = sq_y + sq - 130
+    sub_y = sq_y + sq - 200
+
+    def _escape_filter(text):
+        return text.replace("'", "'\\''").replace(",", "\\,").replace(":", "\\:")
+
+    def _escape_fontpath(path):
+        """Windows 드라이브 콜론(C:)을 ffmpeg 필터용으로 이스케이프"""
+        return path.replace(":", "\\:")
+
     sub_filters = []
     for start, end, text in subtitles:
-        escaped = text.replace("'", "'\\''").replace(",", "\\,").replace(":", "\\:")
+        escaped = _escape_filter(text)
         sub_filters.append(
-            f"drawtext=fontfile='{font_sub}':text='{escaped}':"
-            f"fontsize=48:fontcolor=white:borderw=3:bordercolor=black:"
+            f"drawtext=fontfile='{_escape_fontpath(font_sub)}':text='{escaped}':"
+            f"fontsize=55:fontcolor=white:borderw=3:bordercolor=black:"
             f"x=(w-text_w)/2:y={sub_y}:"
             f"enable='between(t,{start},{end})'"
         )
@@ -189,35 +197,53 @@ def assemble_shorts(job_id: str, config: dict, progress_callback=None):
     title_filters = []
     if title_text and font_title:
         title_lines = split_title(title_text, max_chars=8)
-        title_fontsize = 73
-        title_line_gap = 85
+        title_fontsize = 120
+        title_line_gap = 114
+        title_colors = ["white", "#E8D44D"]  # 윗줄 흰색, 아랫줄 톤다운 노란색
+        font_path_escaped = _escape_fontpath(font_title)
         for j, line in enumerate(title_lines):
-            escaped = line.replace("'", "'\\''").replace(",", "\\,").replace(":", "\\:")
+            escaped = _escape_filter(line)
             if len(title_lines) == 1:
                 ty = sq_y - title_fontsize - 30
             else:
                 base_y = sq_y - (len(title_lines) * title_line_gap) - 10
                 ty = base_y + (j * title_line_gap)
+            line_color = title_colors[min(j, len(title_colors) - 1)]
+            # 그림자 레이어 (검정, 살짝 오프셋)
             title_filters.append(
-                f"drawtext=fontfile='{font_title}':text='{escaped}':"
-                f"fontsize={title_fontsize}:fontcolor={title_color}:borderw=3:bordercolor=black:"
-                f"x=(w-text_w)/2:y={ty}:"
-                f"enable='between(t,0,15)':"
-                f"alpha='if(lt(t,0.3),t/0.3,1)'"
+                f"drawtext=fontfile='{font_path_escaped}':text='{escaped}':"
+                f"fontsize={title_fontsize}:fontcolor=black@0.5:"
+                f"x=(w-text_w)/2+6:y={ty}+6"
+            )
+            # 본문 레이어 (테두리 + 색상)
+            title_filters.append(
+                f"drawtext=fontfile='{font_path_escaped}':text='{escaped}':"
+                f"fontsize={title_fontsize}:fontcolor={line_color}:"
+                f"borderw=4:bordercolor=black@0.8:"
+                f"x=(w-text_w)/2:y={ty}"
             )
 
     all_filters = title_filters + sub_filters
     output_path = os.path.join(output_dir, "shorts_final.mp4")
 
     if all_filters:
+        # Windows에서 인라인 -vf는 경로/한글 이스케이핑 문제가 있으므로
+        # filter_script 파일로 전달
         filter_str = ",".join(all_filters)
-        run(
+        filter_script = os.path.join(temp_dir, "subtitle_filter.txt")
+        with open(filter_script, "w", encoding="utf-8") as f:
+            f.write(filter_str)
+        await asyncio.to_thread(
+            run,
             f'ffmpeg -y -i "{audio_out}" '
-            f'-vf "{filter_str}" '
-            f'-c:v libx264 -preset fast -crf 18 -c:a copy "{output_path}"'
+            f'-filter_script:v "{filter_script}" '
+            f'-c:v libx264 -preset fast -crf 18 -c:a copy "{output_path}"',
         )
     else:
-        run(f'ffmpeg -y -i "{audio_out}" -c copy "{output_path}"')
+        await asyncio.to_thread(
+            run,
+            f'ffmpeg -y -i "{audio_out}" -c copy "{output_path}"',
+        )
 
     # ── 완료 ──
     _update(progress_callback, job_id, "completed", 1.0, "완료!")

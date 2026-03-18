@@ -316,6 +316,192 @@ input[type="range"] {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* 제목 선택 카드 */
+.title-option {
+    background: var(--bg);
+    border: 2px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 10px;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+}
+.title-option:hover {
+    border-color: var(--primary);
+    background: var(--surface-hover);
+}
+.title-option.selected {
+    border-color: var(--primary);
+    background: rgba(0, 206, 209, 0.1);
+}
+.title-text {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+.title-hook {
+    font-size: 12px;
+    color: var(--text-dim);
+}
+
+/* 나레이션 라인 */
+.narration-line {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 10px;
+}
+.narration-role {
+    font-size: 11px;
+    color: #000;
+    background: var(--primary);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+}
+.char-count {
+    font-size: 11px;
+    color: var(--success);
+    font-family: monospace;
+}
+.char-count.over {
+    color: var(--error);
+    font-weight: 700;
+}
+
+/* 프롬프트 편집 영역 */
+.prompt-edit {
+    padding: 10px 12px;
+    border-top: 1px solid var(--border);
+}
+.korean-request {
+    width: 100%;
+    padding: 8px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 13px;
+    margin-bottom: 8px;
+    outline: none;
+}
+.korean-request:focus {
+    border-color: var(--primary);
+}
+
+/* 이미지 재생성 로딩 오버레이 */
+.regen-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(15, 15, 15, 0.7);
+    z-index: 10;
+    border-radius: var(--radius) var(--radius) 0 0;
+}
+.regen-spinner {
+    width: 36px;
+    height: 36px;
+    border: 3px solid var(--border);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-bottom: 10px;
+}
+.regen-text {
+    color: var(--primary);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+/* BGM 선택 */
+.bgm-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.bgm-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg);
+    border: 2px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+}
+.bgm-card:hover {
+    border-color: var(--primary);
+    background: var(--surface-hover);
+}
+.bgm-card.selected {
+    border-color: var(--primary);
+    background: rgba(0, 206, 209, 0.1);
+}
+.bgm-name {
+    font-size: 14px;
+    font-weight: 600;
+    flex: 1;
+}
+.bgm-duration {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin: 0 12px;
+    font-family: monospace;
+}
+.bgm-play-btn {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    font-size: 14px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+}
+.bgm-play-btn:hover {
+    border-color: var(--primary);
+    background: var(--surface-hover);
+}
+.bgm-play-btn.playing {
+    border-color: var(--primary);
+    color: var(--primary);
+}
+.bgm-start-input-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+}
+.bgm-time-input {
+    width: 80px;
+    padding: 6px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 14px;
+    font-family: monospace;
+    outline: none;
+}
+.bgm-time-input:focus {
+    border-color: var(--primary);
+}
+.text-dim {
+    color: var(--text-dim);
+    font-size: 13px;
+}
+
 .hidden { display: none !important; }
 
 /* 반응형 */

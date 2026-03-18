@@ -1,6 +1,6 @@
 """작업 관리 API"""
 
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Path, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from api.models import JobCreateRequest, JobResponse, JobStatus
@@ -47,6 +47,8 @@ async def create_job(
             [line.model_dump() for line in request.lines], ensure_ascii=False
         ),
         bgm_volume=request.bgm_volume,
+        bgm_filename=request.bgm_filename,
+        bgm_start_sec=request.bgm_start_sec,
         status="pending",
         current_step="작업 대기 중...",
     )
@@ -73,7 +75,10 @@ async def list_jobs(limit: int = 20, db: Session = Depends(get_db)):
 
 
 @router.get("/{job_id}", response_model=JobResponse)
-async def get_job(job_id: str, db: Session = Depends(get_db)):
+async def get_job(
+    job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
+    db: Session = Depends(get_db),
+):
     """작업 상태 조회"""
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
@@ -82,13 +87,19 @@ async def get_job(job_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{job_id}/stream")
-async def stream_progress(job_id: str):
+async def stream_progress(
+    request: Request,
+    job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
+):
     """SSE로 실시간 진행률 전송"""
 
     async def event_generator():
-        while True:
-            db = next(get_db())
-            try:
+        db = next(get_db())
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                db.expire_all()
                 job = db.query(Job).filter(Job.id == job_id).first()
                 if not job:
                     yield f"data: {json.dumps({'error': '작업을 찾을 수 없습니다'})}\n\n"
@@ -105,9 +116,9 @@ async def stream_progress(job_id: str):
                 yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                 if job.status in ("completed", "failed"):
                     break
-            finally:
-                db.close()
-            await asyncio.sleep(1)
+                await asyncio.sleep(1)
+        finally:
+            db.close()
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

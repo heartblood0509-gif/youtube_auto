@@ -39,12 +39,58 @@ class JobStatus(str, Enum):
     FAILED = "failed"
 
 
-# ── 요청 ──
+# ── Step 2: 제목 생성 ──
 
-class ScriptRequest(BaseModel):
+class TitleRequest(BaseModel):
     topic: str = Field(..., min_length=2, max_length=200)
-    style: StylePreset = StylePreset.CINEMATIC
+    category: str = "general"
+    pain_point: Optional[str] = None
+    ingredient: Optional[str] = None
+    mention_type: Optional[str] = None
+
+
+class TitleOption(BaseModel):
+    title: str
+    hook: str
+
+
+class TitleResponse(BaseModel):
+    titles: list[TitleOption]
+
+
+# ── Step 3: 나레이션 생성 ──
+
+class NarrationRequest(BaseModel):
+    topic: str = Field(..., min_length=2, max_length=200)
+    selected_title: str = Field(..., min_length=1, max_length=30)
     num_lines: int = Field(default=6, ge=5, le=8)
+    category: str = "general"
+    pain_point: Optional[str] = None
+    ingredient: Optional[str] = None
+    mention_type: Optional[str] = None
+
+
+class NarrationLine(BaseModel):
+    text: str
+    role: str
+
+
+class NarrationResponse(BaseModel):
+    lines: list[NarrationLine]
+
+
+# ── Step 4: 이미지 프롬프트 생성 ──
+
+class ImagePromptRequest(BaseModel):
+    narration_lines: list[str]
+    style: StylePreset = StylePreset.CINEMATIC
+
+
+class ImagePromptResponse(BaseModel):
+    lines: list[ScriptLine]
+
+
+# ── 요청 (기존) ──
 
 
 class ScriptLine(BaseModel):
@@ -61,6 +107,8 @@ class JobCreateRequest(BaseModel):
     title: str
     lines: list[ScriptLine]
     bgm_volume: float = Field(default=0.12, ge=0.0, le=0.5)
+    bgm_filename: Optional[str] = None
+    bgm_start_sec: float = Field(default=0.0, ge=0.0)
 
 
 # ── 응답 ──

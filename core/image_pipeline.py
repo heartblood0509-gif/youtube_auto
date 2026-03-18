@@ -1,6 +1,8 @@
 """Ken Burns 모션 효과 - 이미지를 영상 클립으로 변환"""
 
+import shlex
 import subprocess
+import sys
 
 
 def apply_ken_burns(
@@ -20,9 +22,16 @@ def apply_ken_burns(
     total_frames = int(duration * fps)
     zoom_speed = 0.25 / total_frames  # 전체 25% 줌
 
-    # 업스케일 해상도 (4배)
+    # 업스케일 해상도 (4배) - 비율 유지하며 프레임을 채우도록 스케일링
     up_w = width * 4
     up_h = height * 4
+    # 가로/세로 중 프레임을 채우는 쪽에 맞추고, 나머지는 비율 유지
+    # -2는 ffmpeg에서 짝수 보장
+    scale_expr = (
+        f"scale='if(gt(iw/ih,{up_w}/{up_h}),{up_w},-2)'"
+        f":'if(gt(iw/ih,{up_w}/{up_h}),-2,{up_h})'"
+        f":flags=lanczos"
+    )
 
     filter_map = {
         "zoom_in": (
@@ -62,7 +71,7 @@ def apply_ken_burns(
     }
 
     zoompan_filter = filter_map.get(motion_type, filter_map["zoom_in"])
-    vf = f"scale={up_w}:{up_h}:flags=lanczos,{zoompan_filter}"
+    vf = f"{scale_expr},{zoompan_filter}"
 
     cmd = (
         f'ffmpeg -y -loop 1 -i "{image_path}" '
@@ -73,7 +82,11 @@ def apply_ken_burns(
         f'"{output_path}"'
     )
 
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    if sys.platform == "win32":
+        args = cmd
+    else:
+        args = shlex.split(cmd)
+    result = subprocess.run(args, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"Ken Burns 실패: {result.stderr[:500]}")
 

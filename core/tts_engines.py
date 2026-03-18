@@ -12,7 +12,7 @@ from core.audio_utils import (
 )
 
 
-def generate_tts_edge(tts_dir, sentences):
+async def generate_tts_edge(tts_dir, sentences):
     """
     Edge TTS로 나레이션 생성 (무료, 빠름).
     반환: (narration_path, timings)
@@ -20,29 +20,24 @@ def generate_tts_edge(tts_dir, sentences):
     import edge_tts
 
     text = " ".join(sentences)
-
-    async def _generate():
-        voice = "ko-KR-InJoonNeural"
-        communicate = edge_tts.Communicate(text, voice, rate="+20%")
-        sent_timings = []
-        mp3_path = os.path.join(tts_dir, "narration.mp3")
-        with open(mp3_path, "wb") as f:
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    f.write(chunk["data"])
-                elif chunk["type"] == "SentenceBoundary":
-                    sent_timings.append(
-                        {
-                            "text": chunk["text"],
-                            "offset": chunk["offset"] / 10_000_000,
-                            "duration": chunk["duration"] / 10_000_000,
-                            "end": (chunk["offset"] + chunk["duration"]) / 10_000_000,
-                        }
-                    )
-        return mp3_path, sent_timings
-
-    narration_path, timings = asyncio.run(_generate())
-    return narration_path, timings
+    voice = "ko-KR-InJoonNeural"
+    communicate = edge_tts.Communicate(text, voice, rate="+20%")
+    sent_timings = []
+    mp3_path = os.path.join(tts_dir, "narration.mp3")
+    with open(mp3_path, "wb") as f:
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                f.write(chunk["data"])
+            elif chunk["type"] == "SentenceBoundary":
+                sent_timings.append(
+                    {
+                        "text": chunk["text"],
+                        "offset": chunk["offset"] / 10_000_000,
+                        "duration": chunk["duration"] / 10_000_000,
+                        "end": (chunk["offset"] + chunk["duration"]) / 10_000_000,
+                    }
+                )
+    return mp3_path, sent_timings
 
 
 def generate_tts_typecast(tts_dir, sentences):
@@ -52,8 +47,9 @@ def generate_tts_typecast(tts_dir, sentences):
     """
     import requests
     import soundfile as sf
+    from config import settings
 
-    api_key = os.getenv("TYPECAST_API_KEY", "")
+    api_key = settings.TYPECAST_API_KEY
     if not api_key:
         raise RuntimeError("TYPECAST_API_KEY가 설정되지 않았습니다")
 

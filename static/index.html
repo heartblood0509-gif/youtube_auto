@@ -11,15 +11,46 @@
         <header>
             <h1>AI 쇼츠 자동 제작</h1>
             <p class="subtitle">주제만 입력하면 영상이 완성됩니다</p>
+            <a href="/static/history.html" class="btn-secondary btn-small">작업 이력</a>
+            <a href="https://github.com/orioncactus/pretendard/releases" target="_blank" rel="noopener" class="btn-secondary btn-small">Pretendard 폰트 다운로드</a>
         </header>
 
-        <!-- Step 1: 주제 입력 -->
+        <!-- Step 1: 주제 & 카테고리 입력 -->
         <section id="step-input" class="card">
             <h2>1. 주제 & 설정</h2>
 
             <div class="form-group">
+                <label for="category">카테고리</label>
+                <select id="category" onchange="toggleCategoryFields()">
+                    <option value="cosmetics">화장품</option>
+                    <option value="general">일반</option>
+                </select>
+            </div>
+
+            <div class="form-group">
                 <label for="topic">주제</label>
-                <input type="text" id="topic" placeholder="예: 피부 각질 제거 팁" maxlength="200">
+                <input type="text" id="topic" placeholder="예: 여름철 모공 관리 팁" maxlength="200">
+            </div>
+
+            <!-- 화장품 카테고리 전용 필드 -->
+            <div id="cosmetics-fields">
+                <div class="form-group">
+                    <label for="pain-point">타겟 고민 / 페인포인트</label>
+                    <input type="text" id="pain-point" placeholder="예: 모공 넓어짐, 칙칙한 피부톤" maxlength="100">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="ingredient">핵심 성분 (선택)</label>
+                        <input type="text" id="ingredient" placeholder="예: 나이아신아마이드" maxlength="100">
+                    </div>
+                    <div class="form-group">
+                        <label for="mention-type">제품 언급 방식</label>
+                        <select id="mention-type">
+                            <option value="comment">댓글 유도</option>
+                            <option value="direct">직접 언급</option>
+                        </select>
+                    </div>
+                </div>
             </div>
 
             <div class="form-row">
@@ -56,14 +87,56 @@
                 </div>
             </div>
 
-            <button id="btn-generate" class="btn-primary" onclick="generateScript()">
-                대본 생성하기
+            <!-- BGM 선택 -->
+            <div class="form-group">
+                <label>BGM 선택</label>
+                <div id="bgm-list" class="bgm-grid">
+                    <p class="text-dim">BGM 목록 로딩 중...</p>
+                </div>
+            </div>
+
+            <!-- BGM 시작 지점 -->
+            <div id="bgm-start-section" class="form-group hidden">
+                <label>BGM 시작 지점: <span id="bgm-start-val">0:00</span></label>
+                <input type="range" id="bgm-start" min="0" max="100" step="0.1" value="0">
+                <div class="bgm-start-input-row">
+                    <input type="number" id="bgm-start-sec" min="0" step="0.1" value="0" class="bgm-time-input">
+                    <span class="text-dim">초</span>
+                </div>
+            </div>
+
+            <button id="btn-generate" class="btn-primary" onclick="generateTitles()">
+                제목 생성하기
             </button>
         </section>
 
-        <!-- Step 2: 대본 확인/수정 -->
-        <section id="step-script" class="card hidden">
-            <h2>2. 대본 확인</h2>
+        <!-- Step 2: 제목 선택 -->
+        <section id="step-titles" class="card hidden">
+            <h2>2. 제목 선택</h2>
+            <p class="subtitle">마음에 드는 제목을 클릭하세요</p>
+            <div id="title-options"></div>
+            <div class="btn-group">
+                <button class="btn-secondary" onclick="generateTitles()">다시 생성</button>
+            </div>
+        </section>
+
+        <!-- Step 3: 나레이션 확인 -->
+        <section id="step-narration" class="card hidden">
+            <h2>3. 나레이션 확인</h2>
+            <div class="form-group">
+                <label>선택된 제목</label>
+                <input type="text" id="selected-title-display" readonly>
+            </div>
+            <div id="narration-lines"></div>
+            <div class="btn-group">
+                <button class="btn-secondary" onclick="regenerateNarration()">다시 생성</button>
+                <button class="btn-primary" onclick="approveNarration()">나레이션 확정</button>
+            </div>
+        </section>
+
+        <!-- Step 4: 최종 확인 (이미지 프롬프트 + 모션) -->
+        <section id="step-final" class="card hidden">
+            <h2>4. 최종 확인</h2>
 
             <div class="form-group">
                 <label for="title-text">제목</label>
@@ -73,7 +146,7 @@
             <div id="script-lines"></div>
 
             <div class="btn-group">
-                <button class="btn-secondary" onclick="generateScript()">다시 생성</button>
+                <button class="btn-secondary" onclick="approveNarration()">이미지 프롬프트 다시 생성</button>
                 <button class="btn-primary" onclick="createJob()">이미지 생성 시작</button>
             </div>
         </section>

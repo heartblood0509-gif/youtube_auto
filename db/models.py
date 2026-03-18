@@ -24,6 +24,8 @@ class Job(Base):
     title = Column(Text, default="")
     script_json = Column(Text, default="[]")
     bgm_volume = Column(Float, default=0.12)
+    bgm_filename = Column(String, nullable=True)
+    bgm_start_sec = Column(Float, default=0.0)
 
     # 출력
     video_path = Column(String, nullable=True)
