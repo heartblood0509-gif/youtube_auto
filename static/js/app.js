@@ -25,6 +25,24 @@ const VOICE_OPTIONS = {
     ],
 };
 
+// ── 스텝 구성 ──
+const STEPS = [
+    { id: 'step-input',     label: '주제',     summaryFn: () => document.getElementById('topic').value || '' },
+    { id: 'step-titles',    label: '제목',     summaryFn: () => selectedTitle || '' },
+    { id: 'step-narration', label: '나레이션', summaryFn: () => selectedTitle || '' },
+    { id: 'step-style',     label: '스타일',   summaryFn: () => {
+        const card = document.querySelector('.style-card.selected .style-card-name');
+        return card ? card.textContent : '';
+    }},
+    { id: 'step-tts',       label: '음성',     summaryFn: () => {
+        const sel = document.getElementById('tts-voice');
+        return sel && sel.selectedOptions[0] ? sel.selectedOptions[0].text : '';
+    }},
+    { id: 'step-bgm',       label: 'BGM',      summaryFn: () => selectedBgm ? selectedBgm.replace(/\.(mp3|wav|ogg)$/i, '') : '없음' },
+    { id: 'step-confirm',   label: '확인',     summaryFn: () => '' },
+];
+let currentStepIndex = 0;
+
 // ── 상태 관리 ──
 let titleOptions = null;
 let selectedTitle = null;
@@ -92,9 +110,7 @@ async function generateTitles() {
 
 function displayTitles(data) {
     hideLoading();
-    hideAllSteps();
-    document.getElementById('step-input').classList.remove('hidden');
-    document.getElementById('step-titles').classList.remove('hidden');
+    goToStep(1);
 
     const container = document.getElementById('title-options');
     container.innerHTML = data.titles.map((opt, i) => `
@@ -153,10 +169,7 @@ async function generateNarration() {
 
 function displayNarration(data) {
     hideLoading();
-    hideAllSteps();
-    document.getElementById('step-input').classList.remove('hidden');
-    document.getElementById('step-titles').classList.remove('hidden');
-    document.getElementById('step-narration').classList.remove('hidden');
+    goToStep(2);
 
     document.getElementById('selected-title-display').value = selectedTitle;
 
@@ -209,13 +222,7 @@ function approveNarration() {
     // 나레이션 텍스트 저장 (이미지 프롬프트 생성 시 사용)
     window._approvedNarrationLines = narrationLines;
 
-    hideAllSteps();
-    document.getElementById('step-input').classList.remove('hidden');
-    document.getElementById('step-titles').classList.remove('hidden');
-    document.getElementById('step-narration').classList.remove('hidden');
-    document.getElementById('step-style').classList.remove('hidden');
-
-    // 이미지 프롬프트 결과 영역 숨김 (새로 생성해야 하므로)
+    goToStep(3);
     document.getElementById('image-prompt-result').classList.add('hidden');
 }
 
@@ -253,11 +260,7 @@ async function generateImagePrompts() {
 
 function displayImagePrompts(data) {
     hideLoading();
-    hideAllSteps();
-    document.getElementById('step-input').classList.remove('hidden');
-    document.getElementById('step-titles').classList.remove('hidden');
-    document.getElementById('step-narration').classList.remove('hidden');
-    document.getElementById('step-style').classList.remove('hidden');
+    goToStep(3);
 
     document.getElementById('title-text').value = selectedTitle;
     document.getElementById('image-prompt-result').classList.remove('hidden');
@@ -290,14 +293,7 @@ function confirmImagePrompts() {
         scriptData.lines[i].text = input.value;
     });
 
-    hideAllSteps();
-    document.getElementById('step-input').classList.remove('hidden');
-    document.getElementById('step-titles').classList.remove('hidden');
-    document.getElementById('step-narration').classList.remove('hidden');
-    document.getElementById('step-style').classList.remove('hidden');
-    document.getElementById('step-tts').classList.remove('hidden');
-
-    // TTS 옵션 초기화
+    goToStep(4);
     updateVoiceOptions();
 }
 
@@ -408,15 +404,7 @@ document.getElementById('voice-preview-btn').addEventListener('click', async fun
 // Step 6: BGM 설정
 // ──────────────────────────────────
 function confirmTtsSettings() {
-    hideAllSteps();
-    document.getElementById('step-input').classList.remove('hidden');
-    document.getElementById('step-titles').classList.remove('hidden');
-    document.getElementById('step-narration').classList.remove('hidden');
-    document.getElementById('step-style').classList.remove('hidden');
-    document.getElementById('step-tts').classList.remove('hidden');
-    document.getElementById('step-bgm').classList.remove('hidden');
-
-    // BGM 목록이 아직 로드되지 않았으면 로드
+    goToStep(5);
     if (bgmList.length === 0) loadBgmList();
 }
 
@@ -441,21 +429,15 @@ document.getElementById('bgm-start-sec').addEventListener('change', function() {
 // Step 7: 최종 확인
 // ──────────────────────────────────
 function confirmBgmSettings() {
-    hideAllSteps();
-    document.getElementById('step-input').classList.remove('hidden');
-    document.getElementById('step-titles').classList.remove('hidden');
-    document.getElementById('step-narration').classList.remove('hidden');
-    document.getElementById('step-style').classList.remove('hidden');
-    document.getElementById('step-tts').classList.remove('hidden');
-    document.getElementById('step-bgm').classList.remove('hidden');
-    document.getElementById('step-confirm').classList.remove('hidden');
+    goToStep(6);
 
     // 설정 요약 표시
     const engine = document.getElementById('tts-engine').value;
     const voiceLabel = document.getElementById('tts-voice').selectedOptions[0]?.text || '';
     const emotion = document.getElementById('tts-emotion').value;
     const speed = document.getElementById('tts-speed').value;
-    const style = document.getElementById('style').selectedOptions[0]?.text || '';
+    const styleCard = document.querySelector('.style-card.selected .style-card-name');
+    const style = styleCard ? styleCard.textContent : '';
     const bgm = selectedBgm ? selectedBgm.replace(/\.(mp3|wav|ogg)$/i, '') : '없음';
     const bgmVol = document.getElementById('bgm-volume').value;
 
@@ -482,6 +464,7 @@ async function createJob() {
     const payload = {
         topic: document.getElementById('topic').value,
         style: document.getElementById('style').value,
+        video_mode: "kenburns",
         tts_engine: document.getElementById('tts-engine').value,
         tts_speed: parseFloat(document.getElementById('tts-speed').value),
         voice_id: document.getElementById('tts-voice').value,
@@ -516,11 +499,76 @@ async function createJob() {
 }
 
 // ──────────────────────────────────
+// 스텝 관리 (타임라인 + 접기/펼치기)
+// ──────────────────────────────────
+function goToStep(stepIndex) {
+    currentStepIndex = stepIndex;
+    updateTimeline(stepIndex);
+
+    STEPS.forEach((step, i) => {
+        const section = document.getElementById(step.id);
+        if (i < stepIndex) {
+            section.classList.remove('hidden');
+            section.classList.add('collapsed');
+            const summaryEl = document.getElementById('summary-' + i);
+            if (summaryEl) summaryEl.textContent = step.summaryFn();
+        } else if (i === stepIndex) {
+            section.classList.remove('hidden', 'collapsed');
+        } else {
+            section.classList.add('hidden');
+            section.classList.remove('collapsed');
+        }
+    });
+
+    setTimeout(() => {
+        const current = document.getElementById(STEPS[stepIndex].id);
+        current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 100);
+}
+
+function updateTimeline(activeIndex) {
+    const items = document.querySelectorAll('.timeline-item');
+    items.forEach((item, i) => {
+        item.classList.remove('completed', 'active');
+        if (i < activeIndex) item.classList.add('completed');
+        else if (i === activeIndex) item.classList.add('active');
+    });
+
+    const track = document.querySelector('.timeline-track');
+    const progress = activeIndex === 0 ? 0 : (activeIndex / (STEPS.length - 1)) * 100;
+    track.style.setProperty('--timeline-progress', progress + '%');
+}
+
+function toggleStepExpand(stepIndex) {
+    if (stepIndex >= currentStepIndex) return;
+    const section = document.getElementById(STEPS[stepIndex].id);
+
+    if (section.classList.contains('collapsed')) {
+        section.classList.remove('collapsed');
+    } else {
+        section.classList.add('collapsed');
+        const summaryEl = document.getElementById('summary-' + stepIndex);
+        if (summaryEl) summaryEl.textContent = STEPS[stepIndex].summaryFn();
+    }
+}
+
+// ──────────────────────────────────
+// 스타일 카드 선택
+// ──────────────────────────────────
+function selectStyle(card) {
+    document.querySelectorAll('#step-style .style-card').forEach(c => c.classList.remove('selected'));
+    card.classList.add('selected');
+    document.getElementById('style').value = card.dataset.value;
+}
+
+// ──────────────────────────────────
 // 유틸리티
 // ──────────────────────────────────
 function hideAllSteps() {
     ['step-input', 'step-titles', 'step-narration', 'step-style', 'step-tts', 'step-bgm', 'step-confirm', 'step-loading'].forEach(id => {
-        document.getElementById(id).classList.add('hidden');
+        const el = document.getElementById(id);
+        el.classList.add('hidden');
+        el.classList.remove('collapsed');
     });
 }
 
@@ -641,5 +689,6 @@ function formatTime(sec) {
     return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-// 페이지 로드 시 BGM 목록 미리 가져오기
+// 페이지 로드 시 초기화
+updateTimeline(0);
 loadBgmList();

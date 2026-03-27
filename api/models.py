@@ -27,11 +27,22 @@ class MotionType(str, Enum):
     PAN_DOWN = "pan_down"
 
 
+class VideoMode(str, Enum):
+    KENBURNS = "kenburns"
+    HAILUO = "hailuo"
+    HAILUO23 = "hailuo23"
+    WAN = "wan"
+    KLING = "kling"
+    VEO = "veo"
+
+
 class JobStatus(str, Enum):
     PENDING = "pending"
     GENERATING_IMAGES = "generating_images"
     PREVIEW_READY = "preview_ready"
     AWAITING_CONFIRMATION = "awaiting_confirmation"
+    GENERATING_CLIPS = "generating_clips"
+    CLIPS_READY = "clips_ready"
     GENERATING_TTS = "generating_tts"
     ASSEMBLING_VIDEO = "assembling_video"
     COMPLETED = "completed"
@@ -101,6 +112,7 @@ class ScriptLine(BaseModel):
 class JobCreateRequest(BaseModel):
     topic: str
     style: StylePreset
+    video_mode: VideoMode = VideoMode.KENBURNS
     tts_engine: TTSEngine = TTSEngine.EDGE
     tts_speed: float = Field(default=1.0, ge=0.5, le=2.0)
     voice_id: Optional[str] = None
@@ -133,4 +145,11 @@ class JobResponse(BaseModel):
 class PreviewResponse(BaseModel):
     title: str
     lines: list[ScriptLine]
+    image_urls: list[str]
+
+
+class ClipPreviewResponse(BaseModel):
+    title: str
+    lines: list[ScriptLine]
+    clip_urls: list[str]
     image_urls: list[str]

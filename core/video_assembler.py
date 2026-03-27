@@ -7,11 +7,12 @@ import os
 
 from core.audio_utils import (
     run,
+    speed_up_sentences,
     build_aligned_narration,
 )
 from core.subtitle_utils import split_subtitle_natural, split_title
 from core.tts_engines import generate_tts_edge, generate_tts_typecast
-from core.image_pipeline import apply_ken_burns
+from core.image_pipeline import apply_ken_burns, process_ai_clip
 from config import settings
 
 
@@ -87,38 +88,71 @@ async def assemble_shorts(job_id: str, config: dict, progress_callback=None):
         clip_durations, clip_starts, total_dur = calculate_dynamic_clips_image(
             sentence_durations
         )
+        # Typecast API가 이미 속도를 처리하므로 1.0으로 호출 → _fast.wav 파일 생성
+        await asyncio.to_thread(
+            speed_up_sentences, tts_dir, sentences, tts_speed=1.0
+        )
         narration_path, timings = await asyncio.to_thread(
             build_aligned_narration, tts_dir, sentences, clip_starts, total_dur
         )
     else:
         raise ValueError(f"알 수 없는 TTS 엔진: {engine}")
 
-    # ── Step 2: Ken Burns 모션 적용 ──
-    _update(
-        progress_callback, job_id, "assembling_video", 0.55, "Ken Burns 모션 적용 중..."
-    )
+    # ── Step 2: 영상 클립 생성 (Ken Burns 또는 AI 클립 trim+zoom) ──
+    video_mode = config.get("video_mode", "kenburns")
+    ai_clips = config.get("ai_clips")
 
     clip_files = []
-    for i, (img_path, motion, dur) in enumerate(zip(images, motions, clip_durations)):
-        clip_path = os.path.join(temp_dir, f"clip_{i:02d}.mp4")
-        await asyncio.to_thread(
-            apply_ken_burns,
-            image_path=img_path,
-            output_path=clip_path,
-            motion_type=motion,
-            duration=dur,
-            width=settings.TARGET_WIDTH,
-            height=settings.TARGET_HEIGHT,
-            fps=settings.FPS,
-        )
-        clip_files.append(clip_path)
+
+    if video_mode in ("hailuo", "hailuo23", "wan", "kling", "veo") and ai_clips and len(ai_clips) == len(images):
+        # AI 영상 모드: AI 클립에 trim + 서서히 줌인 적용
         _update(
-            progress_callback,
-            job_id,
-            "assembling_video",
-            0.55 + (i + 1) / len(images) * 0.15,
-            f"Ken Burns 적용 ({i + 1}/{len(images)})",
+            progress_callback, job_id, "assembling_video", 0.55, "AI 클립 trim + 줌인 적용 중..."
         )
+        for i, (raw_clip, dur) in enumerate(zip(ai_clips, clip_durations)):
+            clip_path = os.path.join(temp_dir, f"clip_{i:02d}.mp4")
+            await asyncio.to_thread(
+                process_ai_clip,
+                clip_path=raw_clip,
+                output_path=clip_path,
+                duration=dur,
+                width=settings.TARGET_WIDTH,
+                height=settings.TARGET_HEIGHT,
+                fps=settings.FPS,
+            )
+            clip_files.append(clip_path)
+            _update(
+                progress_callback,
+                job_id,
+                "assembling_video",
+                0.55 + (i + 1) / len(images) * 0.15,
+                f"AI 클립 처리 ({i + 1}/{len(images)})",
+            )
+    else:
+        # Ken Burns 모드: 이미지에 줌/팬 효과 적용
+        _update(
+            progress_callback, job_id, "assembling_video", 0.55, "Ken Burns 모션 적용 중..."
+        )
+        for i, (img_path, motion, dur) in enumerate(zip(images, motions, clip_durations)):
+            clip_path = os.path.join(temp_dir, f"clip_{i:02d}.mp4")
+            await asyncio.to_thread(
+                apply_ken_burns,
+                image_path=img_path,
+                output_path=clip_path,
+                motion_type=motion,
+                duration=dur,
+                width=settings.TARGET_WIDTH,
+                height=settings.TARGET_HEIGHT,
+                fps=settings.FPS,
+            )
+            clip_files.append(clip_path)
+            _update(
+                progress_callback,
+                job_id,
+                "assembling_video",
+                0.55 + (i + 1) / len(images) * 0.15,
+                f"Ken Burns 적용 ({i + 1}/{len(images)})",
+            )
 
     # ── Step 3: 클립 연결 ──
     _update(progress_callback, job_id, "assembling_video", 0.72, "클립 연결 중...")
@@ -165,6 +199,19 @@ async def assemble_shorts(job_id: str, config: dict, progress_callback=None):
             f"-map 0:v -map 1:a -c:v copy -c:a aac -b:a 192k "
             f'-shortest "{audio_out}"',
         )
+
+    # ── Step 4.5: 오디오 라우드니스 노멀라이즈 (-14 LUFS, YouTube 기준) ──
+    _update(progress_callback, job_id, "assembling_video", 0.85, "오디오 노멀라이즈 중...")
+
+    normalized_out = os.path.join(temp_dir, "normalized.mp4")
+    await asyncio.to_thread(
+        run,
+        f'ffmpeg -y -i "{audio_out}" '
+        f'-af loudnorm=I=-14:LRA=11:TP=-1.0 '
+        f'-c:v copy -c:a aac -b:a 192k '
+        f'"{normalized_out}"',
+    )
+    audio_out = normalized_out
 
     # ── Step 5: 자막 + 타이틀 오버레이 ──
     _update(progress_callback, job_id, "assembling_video", 0.90, "자막/타이틀 합성 중...")

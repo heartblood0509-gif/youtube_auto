@@ -330,6 +330,8 @@ async def generate_image(
     style: str,
     output_path: str,
     max_retries: int = 3,
+    progress_callback=None,
+    job_id: str = None,
 ) -> str:
     """
     Nano Banana 2 (Gemini 3.1 Flash Image)로 이미지 생성.
@@ -372,12 +374,25 @@ async def generate_image(
 
         except Exception as e:
             err_str = str(e)
-            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                if attempt < max_retries:
+            is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
+            is_server_error = "503" in err_str or "UNAVAILABLE" in err_str or "500" in err_str or "INTERNAL" in err_str
+            if (is_rate_limit or is_server_error) and attempt < max_retries:
+                if is_rate_limit:
+                    wait = 30
+                    msg = f"1분에 보낼 수 있는 요청 수를 초과했어요. 약 {wait}초 후 자동으로 재시도합니다"
+                else:
                     wait = 30 * (attempt + 1)
-                    print(f"[RETRY] 할당량 초과, {wait}초 후 재시도 ({attempt + 1}/{max_retries})")
-                    await asyncio.sleep(wait)
-                    continue
+                    msg = f"AI 서버가 일시적으로 불안정해요. 약 {wait}초 후 자동으로 재시도합니다"
+                print(f"[RETRY] {msg} ({attempt + 1}/{max_retries}): {err_str[:80]}")
+                if progress_callback and job_id:
+                    progress_callback(
+                        job_id=job_id,
+                        status="generating_images",
+                        progress=0.1,
+                        step=msg,
+                    )
+                await asyncio.sleep(wait)
+                continue
             raise
 
     raise RuntimeError(f"이미지 생성 실패: {prompt[:50]}...")
@@ -389,37 +404,31 @@ async def generate_all_images(
     style: str,
     storage_dir: str,
     progress_callback=None,
-    batch_size: int = 3,
 ) -> list[str]:
-    """대본의 모든 줄에 대해 3장씩 병렬 생성. 반환: 이미지 경로 목록"""
+    """대본의 모든 이미지를 한 번에 병렬 생성. 반환: 이미지 경로 목록"""
     total = len(lines)
-    image_paths = [None] * total
 
-    for batch_start in range(0, total, batch_size):
-        batch_end = min(batch_start + batch_size, total)
-        batch_num = batch_start // batch_size + 1
-        total_batches = (total + batch_size - 1) // batch_size
+    if progress_callback:
+        progress_callback(
+            job_id=job_id,
+            status="generating_images",
+            progress=0.05,
+            step=f"이미지 생성 중... 0 / {total}장 완료",
+        )
 
-        if progress_callback:
-            progress_callback(
-                job_id=job_id,
-                status="generating_images",
-                progress=0.05 + (batch_start / total) * 0.35,
-                step=f"이미지 생성 중... 배치 {batch_num}/{total_batches} ({batch_start + 1}~{batch_end}/{total})",
-            )
+    tasks = []
+    for i in range(total):
+        output_path = os.path.join(storage_dir, "images", f"img_{i:02d}.png")
+        tasks.append(generate_image(
+            prompt=lines[i]["image_prompt"],
+            style=style,
+            output_path=output_path,
+            progress_callback=progress_callback,
+            job_id=job_id,
+        ))
 
-        tasks = []
-        for i in range(batch_start, batch_end):
-            output_path = os.path.join(storage_dir, "images", f"img_{i:02d}.png")
-            tasks.append(generate_image(
-                prompt=lines[i]["image_prompt"],
-                style=style,
-                output_path=output_path,
-            ))
-
-        results = await asyncio.gather(*tasks)
-        for i, path in enumerate(results):
-            image_paths[batch_start + i] = path
+    results = await asyncio.gather(*tasks)
+    image_paths = list(results)
 
     if progress_callback:
         progress_callback(

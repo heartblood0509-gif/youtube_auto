@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     # API 키
     GEMINI_API_KEY: str = ""
     TYPECAST_API_KEY: str = ""
+    FAL_KEY: str = ""
 
     # 경로
     BASE_DIR: str = BASE_DIR

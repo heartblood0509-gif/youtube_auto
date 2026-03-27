@@ -40,6 +40,7 @@ async def create_job(
     job = Job(
         topic=request.topic,
         style=request.style.value,
+        video_mode=request.video_mode.value,
         tts_engine=request.tts_engine.value,
         tts_speed=request.tts_speed,
         voice_id=request.voice_id,
@@ -60,7 +61,7 @@ async def create_job(
 
     # 작업 디렉토리 생성
     job_dir = os.path.join(settings.STORAGE_DIR, job.id)
-    for sub in ["images", "tts", "temp", "output"]:
+    for sub in ["images", "clips", "tts", "temp", "output"]:
         os.makedirs(os.path.join(job_dir, sub), exist_ok=True)
 
     # 백그라운드에서 이미지 생성 시작
@@ -115,6 +116,46 @@ async def stream_progress(
                     data["video_url"] = f"/api/jobs/{job.id}/video"
                 if job.error_message:
                     data["error"] = job.error_message
+
+                # 이미지 생성 단계: 대본 + 완성된 이미지 인덱스 전송
+                if job.status in ("pending", "generating_images", "preview_ready"):
+                    try:
+                        lines = json.loads(job.script_json) if job.script_json else []
+                        data["lines"] = [
+                            {"text": l.get("text", ""), "motion": l.get("motion", "")}
+                            for l in lines
+                        ]
+                        job_dir = os.path.join(settings.STORAGE_DIR, job_id)
+                        completed = []
+                        for i in range(len(lines)):
+                            img_path = os.path.join(
+                                job_dir, "images", f"img_{i:02d}.png"
+                            )
+                            if os.path.exists(img_path):
+                                completed.append(i)
+                        data["completed_images"] = completed
+                    except Exception:
+                        pass
+
+                # AI 클립 생성 단계: 완성된 클립 인덱스 전송
+                if job.status in ("generating_clips", "clips_ready"):
+                    try:
+                        lines = json.loads(job.script_json) if job.script_json else []
+                        data["lines"] = [
+                            {"text": l.get("text", ""), "motion": l.get("motion", "")}
+                            for l in lines
+                        ]
+                        job_dir = os.path.join(settings.STORAGE_DIR, job_id)
+                        completed_clips = []
+                        for i in range(len(lines)):
+                            clip_path = os.path.join(
+                                job_dir, "clips", f"clip_raw_{i:02d}.mp4"
+                            )
+                            if os.path.exists(clip_path):
+                                completed_clips.append(i)
+                        data["completed_clips"] = completed_clips
+                    except Exception:
+                        pass
                 yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                 if job.status in ("completed", "failed"):
                     break
