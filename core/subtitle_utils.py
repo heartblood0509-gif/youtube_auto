@@ -4,21 +4,25 @@ import re
 
 
 def split_title(text, max_chars=8):
-    """타이틀 2줄 분리 (8자 기준)"""
+    """타이틀 2줄 분리 — 균형 잡힌 분할 (단어 순서 보장)"""
     if len(text) <= max_chars:
         return [text]
     words = text.split(" ")
-    line1, line2 = "", ""
-    for word in words:
-        if not line1 or len(line1 + " " + word) <= max_chars:
-            line1 = (line1 + " " + word).strip()
-        else:
-            line2 = (line2 + " " + word).strip()
-    if not line2:
+    if len(words) <= 1:
         mid = len(text) // 2
-        line1 = text[:mid]
-        line2 = text[mid:]
-    return [line1, line2]
+        return [text[:mid], text[mid:]]
+
+    best_split = 1
+    best_diff = float("inf")
+    for i in range(1, len(words)):
+        l1 = " ".join(words[:i])
+        l2 = " ".join(words[i:])
+        diff = abs(len(l1) - len(l2))
+        if diff < best_diff:
+            best_diff = diff
+            best_split = i
+
+    return [" ".join(words[:best_split]), " ".join(words[best_split:])]
 
 
 def split_subtitle_natural(timings):

@@ -8,7 +8,6 @@ from enum import Enum
 class StylePreset(str, Enum):
     REALISTIC = "realistic"
     ANIME = "anime"
-    THREE_D = "3d"
     ILLUSTRATION = "illustration"
     CINEMATIC = "cinematic"
 
@@ -120,6 +119,8 @@ class JobCreateRequest(BaseModel):
     voice_id: Optional[str] = None
     emotion: Optional[str] = None
     title: str
+    title_line1: Optional[str] = None
+    title_line2: Optional[str] = None
     lines: list[ScriptLine]
     bgm_volume: float = Field(default=0.12, ge=0.0, le=0.5)
     bgm_filename: Optional[str] = None

@@ -46,6 +46,8 @@ let currentStepIndex = 0;
 // ── 상태 관리 ──
 let titleOptions = null;
 let selectedTitle = null;
+let titleLine1 = '';
+let titleLine2 = '';
 let narrationData = null;
 let scriptData = null;
 let bgmList = [];
@@ -61,8 +63,43 @@ function toggleCategoryFields() {
     cosmeticsFields.style.display = category === 'cosmetics' ? 'block' : 'none';
 }
 
-function onTitleEdited(value) {
-    selectedTitle = value;
+function autoSplitTitle(text) {
+    const words = text.split(' ').filter(w => w);
+    if (words.length <= 1) return [text, ''];
+
+    let bestSplit = 1, bestDiff = Infinity;
+    for (let i = 1; i < words.length; i++) {
+        const l1 = words.slice(0, i).join(' ');
+        const l2 = words.slice(i).join(' ');
+        const diff = Math.abs(l1.length - l2.length);
+        if (diff < bestDiff) {
+            bestDiff = diff;
+            bestSplit = i;
+        }
+    }
+    return [words.slice(0, bestSplit).join(' '), words.slice(bestSplit).join(' ')];
+}
+
+function onTitleLineEdited() {
+    titleLine1 = document.getElementById('title-line1').value;
+    titleLine2 = document.getElementById('title-line2').value;
+    selectedTitle = titleLine2 ? titleLine1 + ' ' + titleLine2 : titleLine1;
+    updateTitlePreview();
+}
+
+function updateTitlePreview() {
+    const el1 = document.getElementById('preview-line1');
+    const el2 = document.getElementById('preview-line2');
+    const frame = document.getElementById('title-preview-frame');
+
+    el1.textContent = titleLine1;
+    el2.textContent = titleLine2;
+
+    requestAnimationFrame(() => {
+        const frameW = frame.offsetWidth;
+        const overflow = el1.scrollWidth > frameW || el2.scrollWidth > frameW;
+        frame.classList.toggle('overflow', overflow);
+    });
 }
 
 function toggleProductName() {
@@ -128,6 +165,8 @@ async function generateTitles() {
 function displayTitles(data) {
     hideLoading();
     goToStep(1);
+    document.getElementById('btn-next-title').disabled = true;
+    document.getElementById('title-split-editor').classList.add('hidden');
 
     const container = document.getElementById('title-options');
     container.innerHTML = data.titles.map((opt, i) => `
@@ -145,6 +184,17 @@ function selectTitle(index) {
         el.classList.toggle('selected', i === index);
     });
 
+    const [line1, line2] = autoSplitTitle(selectedTitle);
+    titleLine1 = line1;
+    titleLine2 = line2;
+    document.getElementById('title-line1').value = line1;
+    document.getElementById('title-line2').value = line2;
+    updateTitlePreview();
+    document.getElementById('title-split-editor').classList.remove('hidden');
+    document.getElementById('btn-next-title').disabled = false;
+}
+
+function confirmTitle() {
     generateNarration();
 }
 
@@ -188,7 +238,7 @@ function displayNarration(data) {
     hideLoading();
     goToStep(2);
 
-    document.getElementById('selected-title-display').value = selectedTitle;
+    document.getElementById('selected-title-display').textContent = selectedTitle;
 
     const roleLabels = {
         hook: 'Hook', problem: '문제', insight: '핵심',
@@ -279,7 +329,7 @@ function displayImagePrompts(data) {
     hideLoading();
     goToStep(3);
 
-    document.getElementById('title-text').value = selectedTitle;
+    document.getElementById('title-text').textContent = selectedTitle;
     document.getElementById('image-prompt-result').classList.remove('hidden');
 
     const container = document.getElementById('script-lines');
@@ -460,7 +510,7 @@ function confirmBgmSettings() {
 
     document.getElementById('confirm-summary').innerHTML = `
         <div class="summary-grid">
-            <div class="summary-item"><span class="summary-label">제목</span><span>${escapeHtml(document.getElementById('title-text').value)}</span></div>
+            <div class="summary-item"><span class="summary-label">제목</span><span>${escapeHtml(selectedTitle)}</span></div>
             <div class="summary-item"><span class="summary-label">이미지 스타일</span><span>${style}</span></div>
             <div class="summary-item"><span class="summary-label">TTS 엔진</span><span>${engine === 'edge' ? 'Edge TTS' : 'Typecast'}</span></div>
             <div class="summary-item"><span class="summary-label">음성</span><span>${voiceLabel}</span></div>
@@ -486,7 +536,9 @@ async function createJob() {
         tts_speed: parseFloat(document.getElementById('tts-speed').value),
         voice_id: document.getElementById('tts-voice').value,
         emotion: document.getElementById('tts-engine').value === 'typecast' ? document.getElementById('tts-emotion').value : null,
-        title: document.getElementById('title-text').value,
+        title: selectedTitle,
+        title_line1: titleLine1,
+        title_line2: titleLine2,
         lines: scriptData.lines,
         bgm_volume: parseInt(document.getElementById('bgm-volume').value) / 100,
         bgm_filename: selectedBgm || null,

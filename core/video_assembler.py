@@ -246,9 +246,14 @@ async def assemble_shorts(job_id: str, config: dict, progress_callback=None):
 
     title_filters = []
     if title_text and font_title:
-        title_lines = split_title(title_text, max_chars=8)
+        tl1 = config.get("title_line1")
+        tl2 = config.get("title_line2")
+        if tl1:
+            title_lines = [tl1, tl2] if tl2 else [tl1]
+        else:
+            title_lines = split_title(title_text, max_chars=8)
         title_fontsize = 120
-        title_line_gap = 114
+        title_line_gap = 140
         title_colors = ["white", "#E8D44D"]  # 윗줄 흰색, 아랫줄 톤다운 노란색
         font_path_escaped = _escape_fontpath(font_title)
         for j, line in enumerate(title_lines):

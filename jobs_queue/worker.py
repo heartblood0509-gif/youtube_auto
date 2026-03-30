@@ -148,6 +148,8 @@ async def render_video_for_job(job_id: str):
             "images": images,
             "lines": lines,
             "title": job.title,
+            "title_line1": getattr(job, "title_line1", None),
+            "title_line2": getattr(job, "title_line2", None),
             "video_mode": getattr(job, "video_mode", "kenburns") or "kenburns",
             "ai_clips": ai_clips if ai_clips else None,
             "tts_engine": job.tts_engine,

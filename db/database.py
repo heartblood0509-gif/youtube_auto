@@ -30,6 +30,10 @@ def init_db():
             conn.execute(text("ALTER TABLE jobs ADD COLUMN emotion VARCHAR"))
         if "video_mode" not in columns:
             conn.execute(text("ALTER TABLE jobs ADD COLUMN video_mode VARCHAR DEFAULT 'kenburns'"))
+        if "title_line1" not in columns:
+            conn.execute(text("ALTER TABLE jobs ADD COLUMN title_line1 VARCHAR"))
+        if "title_line2" not in columns:
+            conn.execute(text("ALTER TABLE jobs ADD COLUMN title_line2 VARCHAR"))
         conn.commit()
 
 

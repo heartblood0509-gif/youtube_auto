@@ -27,7 +27,6 @@ def _load_nb2_guide() -> str:
 STYLE_SUFFIXES = {
     "realistic": "photorealistic, 8k, ultra-detailed, high resolution photography",
     "anime": "anime style, vibrant colors, Japanese animation, detailed illustration",
-    "3d": "3D rendered, CGI, high quality 3D modeling, octane render",
     "illustration": "digital illustration, artistic, painterly style, concept art",
     "cinematic": "cinematic, dramatic lighting, film still, shallow depth of field",
 }
@@ -258,6 +257,9 @@ Image style: {style_desc}
 - Write prompts as NARRATIVE descriptions, not keyword lists.
 - Structure: Describe the scene like a story — subject, environment, lighting, mood.
 - When depicting people, ALWAYS specify "Korean" (e.g., "a young Korean woman", "a Korean man").
+- For scenes with PEOPLE: use natural, candid, everyday-life settings (cafe, bathroom mirror, living room, street). Never use studio lighting for people.
+- For scenes with PRODUCTS or INGREDIENTS: use either a clean studio-style product shot OR a natural in-use scene (hands applying cream, product on a shelf). Choose whichever fits the narration context better.
+- Describe what you WANT, not what to exclude (positive framing).
 - Keep each prompt under 60 words.
 - Do NOT include any text, words, letters, or watermarks.
 - Each prompt must describe ONE clear scene.

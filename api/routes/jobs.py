@@ -46,6 +46,8 @@ async def create_job(
         voice_id=request.voice_id,
         emotion=request.emotion,
         title=request.title,
+        title_line1=request.title_line1,
+        title_line2=request.title_line2,
         script_json=json.dumps(
             [line.model_dump() for line in request.lines], ensure_ascii=False
         ),

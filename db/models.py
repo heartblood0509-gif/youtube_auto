@@ -25,6 +25,8 @@ class Job(Base):
     voice_id = Column(String, nullable=True)
     emotion = Column(String, nullable=True)
     title = Column(Text, default="")
+    title_line1 = Column(String, nullable=True)
+    title_line2 = Column(String, nullable=True)
     script_json = Column(Text, default="[]")
     bgm_volume = Column(Float, default=0.12)
     bgm_filename = Column(String, nullable=True)
