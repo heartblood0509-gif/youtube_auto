@@ -89,7 +89,7 @@ async def regenerate_image(
     background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
 ):
-    """특정 이미지 재생성 (한글 요청어 → Imagen 프롬프트 변환)"""
+    """특정 이미지 재생성 (한글 요청어 → 영어 프롬프트 변환)"""
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다")

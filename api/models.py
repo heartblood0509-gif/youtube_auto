@@ -94,6 +94,7 @@ class NarrationResponse(BaseModel):
 class ImagePromptRequest(BaseModel):
     narration_lines: list[str]
     style: StylePreset = StylePreset.REALISTIC
+    category: str = "general"
 
 
 class ImagePromptResponse(BaseModel):

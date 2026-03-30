@@ -227,6 +227,7 @@ Output ONLY valid JSON:
 async def generate_image_prompts(
     narration_lines: list[str],
     style: str,
+    category: str = "general",
 ) -> dict:
     """
     확정된 나레이션 기반으로 이미지 프롬프트 + 모션 생성.
@@ -259,7 +260,12 @@ Image style: {style_desc}
 - Keep each prompt under 60 words.
 - Do NOT include any text, words, letters, or watermarks.
 - Each prompt must describe ONE clear scene.
-
+{f"""
+[COSMETICS SHOT TYPE GUIDE]
+- When narration describes skin problems, damage, texture, or barrier issues, actively use EXTREME CLOSE-UP or MACRO shots (show every pore, crack, flake, redness in microscopic detail).
+- When narration describes ingredients or scientific explanation, use MACRO shots of product texture, serum droplets, or skin surface absorbing the product.
+- Use photography terms like: 100mm macro lens, clinical lighting, visible micro-cracks, flaky texture, glistening, pearlescent glow, dermatological photography style.
+""" if category == "cosmetics" else ""}
 [MOTION RULES]
 - Assign a motion type from: {MOTION_TYPES}
 - Vary motions — do not repeat the same motion consecutively.
@@ -366,13 +372,18 @@ async def generate_image(
 
             # 응답에서 이미지 데이터 추출
             image_bytes = None
-            if response.candidates:
-                for part in response.candidates[0].content.parts:
+            candidates = response.candidates
+            if candidates and candidates[0].content and candidates[0].content.parts:
+                for part in candidates[0].content.parts:
                     if part.inline_data and part.inline_data.mime_type.startswith("image/"):
                         image_bytes = part.inline_data.data
                         break
 
             if not image_bytes:
+                if attempt < max_retries:
+                    print(f"[RETRY] 이미지 없는 응답, 재시도 ({attempt + 1}/{max_retries})")
+                    await asyncio.sleep(3)
+                    continue
                 raise RuntimeError("이미지 생성 실패: 응답에 이미지 없음")
 
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -389,7 +400,7 @@ async def generate_image(
                     wait = 30
                     msg = f"1분에 보낼 수 있는 요청 수를 초과했어요. 약 {wait}초 후 자동으로 재시도합니다"
                 else:
-                    wait = 30 * (attempt + 1)
+                    wait = 5 * (attempt + 1)
                     msg = f"AI 서버가 일시적으로 불안정해요. 약 {wait}초 후 자동으로 재시도합니다"
                 print(f"[RETRY] {msg} ({attempt + 1}/{max_retries}): {err_str[:80]}")
                 if progress_callback and job_id:
@@ -413,7 +424,7 @@ async def generate_all_images(
     storage_dir: str,
     progress_callback=None,
 ) -> list[str]:
-    """대본의 모든 이미지를 한 번에 병렬 생성. 반환: 이미지 경로 목록"""
+    """대본의 모든 이미지를 병렬 생성. 반환: 이미지 경로 목록"""
     total = len(lines)
 
     if progress_callback:

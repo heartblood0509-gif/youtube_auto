@@ -3,6 +3,20 @@
  * Step 1: 주제 설정 → Step 2: 제목 선택 → Step 3: 나레이션 확인
  * → Step 4: 이미지 스타일 → Step 5: 음성 설정 → Step 6: BGM 설정
  * → Step 7: 최종 확인 → Job 생성
+
+function showFriendlyError(msg) {
+    const is503 = msg.includes('503') || msg.includes('UNAVAILABLE');
+    const is429 = msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED');
+    let userMsg;
+    if (is503) {
+        userMsg = 'Google AI 서버가 현재 많이 바쁜 상태입니다.\n자동으로 3회 재시도했지만 실패했습니다.\n\n1~2분 후에 다시 시도해주세요.';
+    } else if (is429) {
+        userMsg = 'API 요청 횟수 제한에 도달했습니다.\n1분 후에 다시 시도해주세요.';
+    } else {
+        userMsg = '요청 처리에 실패했습니다.\n다시 시도해주세요.\n\n[상세 정보]\n' + msg;
+    }
+    alert(userMsg);
+}
  */
 
 // ── TTS 음성 옵션 (엔진별) ──
@@ -157,7 +171,7 @@ async function generateTitles() {
         titleOptions = await resp.json();
         displayTitles(titleOptions);
     } catch (e) {
-        alert('에러: ' + e.message);
+        showFriendlyError(e.message);
         hideLoading();
     }
 }
@@ -229,7 +243,7 @@ async function generateNarration() {
         narrationData = await resp.json();
         displayNarration(narrationData);
     } catch (e) {
-        alert('에러: ' + e.message);
+        showFriendlyError(e.message);
         hideLoading();
     }
 }
@@ -304,7 +318,8 @@ async function generateImagePrompts() {
 
     try {
         const style = document.getElementById('style').value;
-        const payload = { narration_lines: narrationLines, style };
+        const category = document.getElementById('category').value;
+        const payload = { narration_lines: narrationLines, style, category };
 
         const resp = await fetch('/api/generate/image-prompts', {
             method: 'POST',
@@ -320,7 +335,7 @@ async function generateImagePrompts() {
         scriptData = await resp.json();
         displayImagePrompts(scriptData);
     } catch (e) {
-        alert('에러: ' + e.message);
+        showFriendlyError(e.message);
         hideLoading();
     }
 }
@@ -562,7 +577,7 @@ async function createJob() {
         const job = await resp.json();
         window.location.href = `/static/status.html?job=${job.job_id}&phase=images`;
     } catch (e) {
-        alert('에러: ' + e.message);
+        showFriendlyError(e.message);
         hideLoading();
     }
 }

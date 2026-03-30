@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     FPS: int = 30
 
     # Gemini 모델
-    GEMINI_TEXT_MODEL: str = "gemini-3-flash-preview"
+    GEMINI_TEXT_MODEL: str = "gemini-2.5-flash"
     GEMINI_IMAGE_MODEL: str = "gemini-3.1-flash-image-preview"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}

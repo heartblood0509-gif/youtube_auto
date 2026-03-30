@@ -266,13 +266,51 @@ function showCompleted(videoUrl) {
     }
 }
 
+async function retryImages() {
+    var jobId = new URLSearchParams(window.location.search).get('job');
+    if (!jobId) return;
+
+    try {
+        var resp = await fetch('/api/jobs/' + jobId + '/retry-images', { method: 'POST' });
+        if (!resp.ok) {
+            var err = await resp.json();
+            alert(err.detail || '재시도 실패');
+            return;
+        }
+        // 상태 초기화 후 다시 폴링 시작
+        cardsBuilt = false;
+        revealedImages = new Set();
+        document.getElementById('error-section').classList.add('hidden');
+        document.getElementById('image-progress-grid').innerHTML = '';
+        document.getElementById('image-progress-grid').classList.add('hidden');
+        document.getElementById('progress-bar-section').classList.remove('hidden');
+        document.getElementById('progress-step').textContent = '이미지 생성 재시도 중...';
+        document.getElementById('progress-percent').textContent = '0%';
+        document.getElementById('progress-fill').style.width = '0%';
+        startPolling();
+    } catch (e) {
+        alert('재시도 요청 실패: ' + e.message);
+    }
+}
+
 function showError(message) {
     // 로딩 플레이스홀더 숨김
     var loadingSection = document.getElementById('video-loading-section');
     if (loadingSection) loadingSection.classList.add('hidden');
 
+    var is503 = message.includes('503') || message.includes('UNAVAILABLE');
+    var is429 = message.includes('429') || message.includes('RESOURCE_EXHAUSTED');
+    var displayMsg;
+    if (is503) {
+        displayMsg = 'Google AI 서버가 현재 많이 바쁜 상태입니다.\n아래 버튼을 눌러 재시도해주세요.';
+    } else if (is429) {
+        displayMsg = 'API 요청 횟수 제한에 도달했습니다.\n1분 후에 재시도해주세요.';
+    } else {
+        displayMsg = message;
+    }
+
     document.getElementById('error-section').classList.remove('hidden');
-    document.getElementById('error-message').textContent = message;
+    document.getElementById('error-message').textContent = displayMsg;
 }
 
 function escapeHtml(str) {

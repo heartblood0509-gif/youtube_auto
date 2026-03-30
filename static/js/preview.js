@@ -145,10 +145,16 @@ async function doRegenerate(index, koreanRequest, englishPrompt = null) {
                         overlay.style.display = 'none';
                         regenBtns.forEach(btn => btn.disabled = false);
                         const errMsg = job.error || '이미지 재생성 실패';
-                        const isServerBusy = errMsg.includes('503') || errMsg.includes('UNAVAILABLE') || errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED');
-                        const userMsg = isServerBusy
-                            ? 'Google AI 서버가 일시적으로 과부하 상태입니다.\n잠시 후 다시 시도해주세요.\n\n[상세 정보]\n' + errMsg
-                            : '이미지 재생성에 실패했습니다.\n다시 시도해주세요.\n\n[상세 정보]\n' + errMsg;
+                        const is503 = errMsg.includes('503') || errMsg.includes('UNAVAILABLE');
+                        const is429 = errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED');
+                        let userMsg;
+                        if (is503) {
+                            userMsg = 'Google AI 서버가 현재 많이 바쁜 상태입니다.\n자동으로 3회 재시도했지만 실패했습니다.\n\n1~2분 후에 다시 시도해주세요.';
+                        } else if (is429) {
+                            userMsg = 'API 요청 횟수 제한에 도달했습니다.\n1분 후에 다시 시도해주세요.';
+                        } else {
+                            userMsg = '이미지 재생성에 실패했습니다.\n다시 시도해주세요.\n\n[상세 정보]\n' + errMsg;
+                        }
                         alert(userMsg);
                         loadPreview();
                         return;
@@ -173,10 +179,17 @@ async function doRegenerate(index, koreanRequest, englishPrompt = null) {
         }
     } catch (e) {
         const errText = e.message || '';
-        const isBusy = errText.includes('503') || errText.includes('UNAVAILABLE') || errText.includes('429') || errText.includes('RESOURCE_EXHAUSTED');
-        alert(isBusy
-            ? 'Google AI 서버가 일시적으로 과부하 상태입니다.\n잠시 후 다시 시도해주세요.\n\n[상세 정보]\n' + errText
-            : '이미지 재생성에 실패했습니다.\n다시 시도해주세요.\n\n[상세 정보]\n' + errText);
+        const is503 = errText.includes('503') || errText.includes('UNAVAILABLE');
+        const is429 = errText.includes('429') || errText.includes('RESOURCE_EXHAUSTED');
+        let errUserMsg;
+        if (is503) {
+            errUserMsg = 'Google AI 서버가 현재 많이 바쁜 상태입니다.\n1~2분 후에 다시 시도해주세요.';
+        } else if (is429) {
+            errUserMsg = 'API 요청 횟수 제한에 도달했습니다.\n1분 후에 다시 시도해주세요.';
+        } else {
+            errUserMsg = '이미지 재생성에 실패했습니다.\n다시 시도해주세요.\n\n[상세 정보]\n' + errText;
+        }
+        alert(errUserMsg);
         img.style.opacity = '1';
         overlay.style.display = 'none';
         regenBtns.forEach(btn => btn.disabled = false);

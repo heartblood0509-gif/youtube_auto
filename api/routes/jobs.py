@@ -168,6 +168,25 @@ async def stream_progress(
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+@router.post("/{job_id}/retry-images")
+async def retry_images(
+    job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
+    background_tasks: BackgroundTasks = None,
+    db: Session = Depends(get_db),
+):
+    """실패한 이미지 생성 재시도"""
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다")
+
+    job.status = "pending"
+    job.error_message = None
+    db.commit()
+
+    background_tasks.add_task(_generate_images_task, job_id)
+    return {"message": "이미지 생성 재시도 시작"}
+
+
 async def _generate_images_task(job_id: str):
     """백그라운드: 이미지 생성"""
     from jobs_queue.worker import generate_images_for_job

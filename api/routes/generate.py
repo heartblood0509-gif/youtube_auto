@@ -66,6 +66,7 @@ async def generate_image_prompts_endpoint(request: ImagePromptRequest):
         result = await gen(
             narration_lines=request.narration_lines,
             style=request.style.value,
+            category=request.category,
         )
         return ImagePromptResponse(**result)
     except Exception as e:

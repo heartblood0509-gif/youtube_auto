@@ -53,7 +53,10 @@
             <!-- 에러 시 표시 -->
             <div id="error-section" class="hidden">
                 <p class="error-text" id="error-message"></p>
-                <a href="/" class="btn-secondary">다시 시도</a>
+                <div class="btn-group center">
+                    <button class="btn-primary" onclick="retryImages()">이미지 생성 재시도</button>
+                    <a href="/" class="btn-secondary">처음으로 돌아가기</a>
+                </div>
             </div>
         </section>
     </div>
