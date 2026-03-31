@@ -36,10 +36,6 @@ function showSuccess(msg) {
 }
 
 // ── 소셜 로그인 ──
-function loginKakao() {
-    window.location.href = '/api/auth/kakao/login';
-}
-
 function loginGoogle() {
     window.location.href = '/api/auth/google/login';
 }
@@ -191,7 +187,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const params = new URLSearchParams(window.location.search);
     const error = params.get('error');
     if (error === 'google_failed') showError('Google 로그인에 실패했습니다');
-    if (error === 'kakao_failed') showError('카카오 로그인에 실패했습니다');
     if (error === 'no_email') showError('이메일 정보를 가져올 수 없습니다. 이메일 제공에 동의해주세요.');
 
     // 초대 코드 필요 여부 확인
