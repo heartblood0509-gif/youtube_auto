@@ -84,14 +84,17 @@ MODELS = {
 FAL_QUEUE_URL = "https://queue.fal.run"
 
 
-def _headers() -> dict:
+def _headers(api_key: str = None) -> dict:
+    key = api_key or settings.FAL_KEY
+    if not key:
+        raise RuntimeError("fal.ai API 키가 설정되지 않았습니다")
     return {
-        "Authorization": f"Key {settings.FAL_KEY}",
+        "Authorization": f"Key {key}",
         "Content-Type": "application/json",
     }
 
 
-async def submit_task(model_key: str, image_url: str) -> dict:
+async def submit_task(model_key: str, image_url: str, api_key: str = None) -> dict:
     """
     fal.ai 큐에 Image-to-Video 태스크 제출.
 
@@ -105,7 +108,7 @@ async def submit_task(model_key: str, image_url: str) -> dict:
         resp = await client.post(
             f"{FAL_QUEUE_URL}/{model_id}",
             json=body,
-            headers=_headers(),
+            headers=_headers(api_key),
         )
         resp.raise_for_status()
         data = resp.json()
@@ -117,7 +120,7 @@ async def submit_task(model_key: str, image_url: str) -> dict:
     }
 
 
-async def poll_task(status_url: str, response_url: str, timeout: int = 600, interval: int = 5) -> str:
+async def poll_task(status_url: str, response_url: str, timeout: int = 600, interval: int = 5, api_key: str = None) -> str:
     """
     fal.ai 태스크 완료까지 폴링 (submit 응답의 URL을 그대로 사용).
 
@@ -129,13 +132,13 @@ async def poll_task(status_url: str, response_url: str, timeout: int = 600, inte
 
     async with httpx.AsyncClient(timeout=30) as client:
         while time.time() - start < timeout:
-            resp = await client.get(status_url, headers=_headers())
+            resp = await client.get(status_url, headers=_headers(api_key))
             resp.raise_for_status()
             status_data = resp.json()
             status = status_data.get("status")
 
             if status == "COMPLETED":
-                result_resp = await client.get(response_url, headers=_headers())
+                result_resp = await client.get(response_url, headers=_headers(api_key))
                 result_resp.raise_for_status()
                 result = result_resp.json()
                 video = result.get("video", {})
@@ -163,7 +166,7 @@ async def download_video(video_url: str, output_path: str) -> str:
     return output_path
 
 
-async def upload_image_to_fal(image_path: str) -> str:
+async def upload_image_to_fal(image_path: str, api_key: str = None) -> str:
     """
     로컬 이미지를 fal.ai CDN에 업로드하여 URL 획득.
     fal.ai API는 image_url을 요구하므로 로컬 파일을 먼저 업로드해야 함.
@@ -179,7 +182,7 @@ async def upload_image_to_fal(image_path: str) -> str:
         initiate_resp = await client.post(
             "https://rest.alpha.fal.ai/storage/upload/initiate",
             json={"file_name": filename, "content_type": mime},
-            headers=_headers(),
+            headers=_headers(api_key),
         )
         initiate_resp.raise_for_status()
         upload_data = initiate_resp.json()
@@ -204,15 +207,16 @@ async def generate_video_clip(
     image_path: str,
     output_path: str,
     model_key: str = "hailuo",
+    api_key: str = None,
 ) -> str:
     """
     이미지 → AI 영상 클립 생성 (업로드 → 제출 → 폴링 → 다운로드).
 
     Returns: 저장된 영상 파일 경로
     """
-    image_url = await upload_image_to_fal(image_path)
-    task_info = await submit_task(model_key, image_url)
-    video_url = await poll_task(task_info["status_url"], task_info["response_url"])
+    image_url = await upload_image_to_fal(image_path, api_key=api_key)
+    task_info = await submit_task(model_key, image_url, api_key=api_key)
+    video_url = await poll_task(task_info["status_url"], task_info["response_url"], api_key=api_key)
     await download_video(video_url, output_path)
     return output_path
 
@@ -223,6 +227,7 @@ async def generate_clips_batch(
     model_key: str = "hailuo",
     progress_callback=None,
     job_id: str = None,
+    api_key: str = None,
 ) -> list[str]:
     """
     여러 이미지를 동시에 AI 영상 클립으로 변환.
@@ -238,7 +243,7 @@ async def generate_clips_batch(
             step=f"이미지 업로드 중 (0/{len(images)})",
         )
 
-    upload_tasks = [upload_image_to_fal(img) for img in images]
+    upload_tasks = [upload_image_to_fal(img, api_key=api_key) for img in images]
     image_urls = await asyncio.gather(*upload_tasks, return_exceptions=True)
 
     for i, url in enumerate(image_urls):
@@ -254,7 +259,7 @@ async def generate_clips_batch(
         )
 
     # 2단계: 모든 태스크 동시 제출
-    submit_tasks_list = [submit_task(model_key, url) for url in image_urls]
+    submit_tasks_list = [submit_task(model_key, url, api_key=api_key) for url in image_urls]
     submissions = await asyncio.gather(*submit_tasks_list, return_exceptions=True)
 
     for i, sub in enumerate(submissions):
@@ -276,7 +281,7 @@ async def generate_clips_batch(
     async def _poll_and_download(i, task_info):
         nonlocal completed
         output_path = os.path.join(output_dir, f"clip_raw_{i:02d}.mp4")
-        video_url = await poll_task(task_info["status_url"], task_info["response_url"])
+        video_url = await poll_task(task_info["status_url"], task_info["response_url"], api_key=api_key)
         await download_video(video_url, output_path)
         completed += 1
         if progress_callback and job_id:

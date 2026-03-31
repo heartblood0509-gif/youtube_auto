@@ -10,7 +10,6 @@ import os
 import re
 import time
 
-_client = None
 _nb2_guide = None
 
 
@@ -33,11 +32,11 @@ STYLE_SUFFIXES = {
 MOTION_TYPES = ["zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down"]
 
 
-def get_client() -> genai.Client:
-    global _client
-    if _client is None:
-        _client = genai.Client(api_key=settings.GEMINI_API_KEY)
-    return _client
+def get_client(api_key: str = None) -> genai.Client:
+    key = api_key or settings.GEMINI_API_KEY
+    if not key:
+        raise RuntimeError("Gemini API 키가 설정되지 않았습니다. 환경변수 또는 api_key 파라미터를 확인해주세요.")
+    return genai.Client(api_key=key)
 
 
 def _build_category_context(
@@ -89,12 +88,13 @@ async def generate_titles(
     ingredient: str = None,
     mention_type: str = None,
     product_name: str = None,
+    api_key: str = None,
 ) -> dict:
     """
     Gemini로 제목 3~4개 생성.
     반환: {"titles": [{"title": "...", "hook": "..."}, ...]}
     """
-    client = get_client()
+    client = get_client(api_key)
     category_context = _build_category_context(category, pain_point, ingredient, mention_type, product_name)
 
     prompt = f"""당신은 YouTube Shorts 전문 카피라이터입니다.
@@ -147,12 +147,13 @@ async def generate_narration(
     ingredient: str = None,
     mention_type: str = None,
     product_name: str = None,
+    api_key: str = None,
 ) -> dict:
     """
     선택된 제목 기반으로 나레이션 생성.
     반환: {"lines": [{"text": "...", "role": "hook"}, ...]}
     """
-    client = get_client()
+    client = get_client(api_key)
     category_context = _build_category_context(category, pain_point, ingredient, mention_type, product_name)
 
     # 카테고리별 라인 지시 강화
@@ -228,12 +229,13 @@ async def generate_image_prompts(
     narration_lines: list[str],
     style: str,
     category: str = "general",
+    api_key: str = None,
 ) -> dict:
     """
     확정된 나레이션 기반으로 이미지 프롬프트 + 모션 생성.
     반환: {"lines": [{"text": "...", "image_prompt": "...", "motion": "..."}, ...]}
     """
-    client = get_client()
+    client = get_client(api_key)
     style_desc = STYLE_SUFFIXES.get(style, style)
     nb2_guide = _load_nb2_guide()
 
@@ -301,11 +303,11 @@ Output ONLY valid JSON:
 # 이미지 프롬프트 변형 (재생성용)
 # ──────────────────────────────────────────────
 
-async def korean_to_nb2_prompt(korean_request: str, narration_text: str) -> str:
+async def korean_to_nb2_prompt(korean_request: str, narration_text: str, api_key: str = None) -> str:
     """
     한글 요청어를 Nano Banana 2용 영어 이미지 프롬프트로 변환.
     """
-    client = get_client()
+    client = get_client(api_key)
     nb2_guide = _load_nb2_guide()
 
     prompt = f"""당신은 이미지 생성 프롬프트 전문가입니다.
@@ -346,13 +348,14 @@ async def generate_image(
     max_retries: int = 3,
     progress_callback=None,
     job_id: str = None,
+    api_key: str = None,
 ) -> str:
     """
     Nano Banana 2 (Gemini 3.1 Flash Image)로 이미지 생성.
     429 할당량 초과 시 자동 재시도 (최대 max_retries회).
     반환: 저장된 파일 경로
     """
-    client = get_client()
+    client = get_client(api_key)
     style_suffix = STYLE_SUFFIXES.get(style, "")
     full_prompt = f"{prompt}, {style_suffix}" if style_suffix else prompt
 
@@ -423,6 +426,7 @@ async def generate_all_images(
     style: str,
     storage_dir: str,
     progress_callback=None,
+    api_key: str = None,
 ) -> list[str]:
     """대본의 모든 이미지를 병렬 생성. 반환: 이미지 경로 목록"""
     total = len(lines)
@@ -446,6 +450,7 @@ async def generate_all_images(
             output_path=output_path,
             progress_callback=progress_callback,
             job_id=job_id,
+            api_key=api_key,
         )
         completed += 1
         if progress_callback:

@@ -44,7 +44,7 @@ V21_ONLY_VOICES = {
 }
 
 
-def generate_tts_typecast(tts_dir, sentences, voice_id=None, speed=None, emotion=None):
+def generate_tts_typecast(tts_dir, sentences, voice_id=None, speed=None, emotion=None, api_key=None):
     """
     Typecast API TTS (고품질 한국어).
     반환: raw_timings (문장별 duration 목록)
@@ -53,14 +53,14 @@ def generate_tts_typecast(tts_dir, sentences, voice_id=None, speed=None, emotion
     import soundfile as sf
     from config import settings
 
-    api_key = settings.TYPECAST_API_KEY
-    if not api_key:
-        raise RuntimeError("TYPECAST_API_KEY가 설정되지 않았습니다")
+    key = api_key or settings.TYPECAST_API_KEY
+    if not key:
+        raise RuntimeError("Typecast API 키가 설정되지 않았습니다")
 
     vid = voice_id or "tc_62e8f21e979b3860fe2f6a24"
     model = "ssfm-v21" if vid in V21_ONLY_VOICES else "ssfm-v30"
 
-    headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
+    headers = {"X-API-KEY": key, "Content-Type": "application/json"}
     raw_timings = []
 
     for i, sent in enumerate(sentences):

@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+__pycache__
+*.pyc
+.DS_Store
+.claude
+.playwright-mcp
+storage
+*.egg-info
+gh.zip
+gh_cli
+assemble_comparison.py
+compare_models.py

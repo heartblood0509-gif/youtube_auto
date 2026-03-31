@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>로그인 - AI 쇼츠 자동 제작</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/login.css">
+</head>
+<body>
+    <div class="login-wrapper">
+        <div class="login-container">
+            <div class="login-header">
+                <h1>AI 쇼츠 자동 제작</h1>
+                <p>주제만 입력하면 영상이 완성됩니다</p>
+            </div>
+
+            <!-- 탭 네비게이션 -->
+            <div class="auth-tabs">
+                <button class="auth-tab active" data-tab="login">로그인</button>
+                <button class="auth-tab" data-tab="register">회원가입</button>
+            </div>
+
+            <!-- 에러 메시지 -->
+            <div id="auth-error" class="auth-error hidden"></div>
+            <div id="auth-success" class="auth-success hidden"></div>
+
+            <!-- 로그인 탭 -->
+            <div id="tab-login" class="auth-panel">
+                <!-- 소셜 로그인 -->
+                <div class="social-login">
+                    <button id="btn-kakao" class="btn-social btn-kakao" onclick="loginKakao()">
+                        <svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 3C6.48 3 2 6.36 2 10.44c0 2.63 1.76 4.94 4.4 6.26-.14.52-.9 3.35-.93 3.56 0 0-.02.17.08.23.1.06.23.01.23.01.31-.04 3.55-2.32 4.11-2.72.36.05.73.08 1.11.08 5.52 0 10-3.36 10-7.42S17.52 3 12 3z" fill="#3C1E1E"/></svg>
+                        카카오로 로그인
+                    </button>
+                    <button id="btn-google" class="btn-social btn-google" onclick="loginGoogle()">
+                        <svg viewBox="0 0 24 24" width="20" height="20"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+                        Google로 로그인
+                    </button>
+                </div>
+
+                <div class="divider"><span>또는</span></div>
+
+                <!-- 이메일 로그인 -->
+                <form id="login-form" onsubmit="handleLogin(event)">
+                    <div class="form-group">
+                        <label for="login-email">이메일</label>
+                        <input type="email" id="login-email" placeholder="example@email.com" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="login-password">비밀번호</label>
+                        <input type="password" id="login-password" placeholder="비밀번호를 입력하세요" required>
+                    </div>
+                    <button type="submit" class="btn-primary btn-full" id="btn-login">로그인</button>
+                </form>
+
+                <div class="auth-links">
+                    <a href="#" onclick="showFindEmail()">아이디 찾기</a>
+                    <span class="divider-dot">|</span>
+                    <a href="#" onclick="showResetPassword()">비밀번호 찾기</a>
+                </div>
+            </div>
+
+            <!-- 회원가입 탭 -->
+            <div id="tab-register" class="auth-panel hidden">
+                <form id="register-form" onsubmit="handleRegister(event)">
+                    <div class="form-group hidden" id="invite-code-group">
+                        <label for="reg-invite-code">초대 코드</label>
+                        <input type="text" id="reg-invite-code" placeholder="강사에게 받은 초대 코드 입력">
+                    </div>
+                    <div class="form-group">
+                        <label for="reg-email">이메일</label>
+                        <input type="email" id="reg-email" placeholder="example@email.com" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="reg-nickname">닉네임</label>
+                        <input type="text" id="reg-nickname" placeholder="2~30자" required minlength="2" maxlength="30">
+                    </div>
+                    <div class="form-group">
+                        <label for="reg-password">비밀번호</label>
+                        <input type="password" id="reg-password" placeholder="8자 이상" required minlength="8">
+                    </div>
+                    <div class="form-group">
+                        <label for="reg-password-confirm">비밀번호 확인</label>
+                        <input type="password" id="reg-password-confirm" placeholder="비밀번호를 다시 입력하세요" required>
+                    </div>
+                    <button type="submit" class="btn-primary btn-full" id="btn-register">가입하기</button>
+                </form>
+            </div>
+
+            <!-- 아이디 찾기 모달 -->
+            <div id="modal-find-email" class="auth-panel hidden">
+                <h3>아이디 찾기</h3>
+                <p class="modal-desc">가입 시 사용한 닉네임을 입력하세요</p>
+                <form onsubmit="handleFindEmail(event)">
+                    <div class="form-group">
+                        <label for="find-nickname">닉네임</label>
+                        <input type="text" id="find-nickname" placeholder="닉네임 입력" required>
+                    </div>
+                    <button type="submit" class="btn-primary btn-full">검색</button>
+                </form>
+                <div id="find-email-result" class="hidden"></div>
+                <button class="btn-secondary btn-full btn-back" onclick="backToLogin()">돌아가기</button>
+            </div>
+
+            <!-- 비밀번호 찾기 모달 -->
+            <div id="modal-reset-password" class="auth-panel hidden">
+                <h3>비밀번호 찾기</h3>
+                <p class="modal-desc">가입 시 사용한 이메일을 입력하면 재설정 링크를 보내드립니다</p>
+                <form onsubmit="handleResetRequest(event)">
+                    <div class="form-group">
+                        <label for="reset-email">이메일</label>
+                        <input type="email" id="reset-email" placeholder="example@email.com" required>
+                    </div>
+                    <button type="submit" class="btn-primary btn-full">재설정 링크 보내기</button>
+                </form>
+                <button class="btn-secondary btn-full btn-back" onclick="backToLogin()">돌아가기</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/login.js"></script>
+</body>
+</html>

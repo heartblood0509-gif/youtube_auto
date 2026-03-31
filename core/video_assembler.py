@@ -77,8 +77,9 @@ async def assemble_shorts(job_id: str, config: dict, progress_callback=None):
             t_acc += d
         total_dur = round(t_acc, 2)
     elif engine == "typecast":
+        tc_api_key = config.get("typecast_api_key")
         await asyncio.to_thread(
-            generate_tts_typecast, tts_dir, sentences, voice_id=voice_id, speed=tts_speed, emotion=emotion
+            generate_tts_typecast, tts_dir, sentences, voice_id=voice_id, speed=tts_speed, emotion=emotion, api_key=tc_api_key
         )
         sentence_durations = [
             t["duration"] for t in json.loads(

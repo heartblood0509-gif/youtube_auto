@@ -10,12 +10,36 @@
     <div class="container">
         <header>
             <h1>작업 이력</h1>
+            <div id="user-info" class="user-info hidden"></div>
             <a href="/" class="btn-secondary btn-small">새 영상 만들기</a>
         </header>
+
+        <p class="history-notice">생성된 파일은 30일간 보관 후 자동 삭제됩니다</p>
 
         <div id="job-list"></div>
     </div>
 
+    <style>
+        .history-notice {
+            text-align: center; color: var(--text-dim); font-size: 13px;
+            margin-bottom: 16px; padding: 8px; background: var(--surface);
+            border-radius: 8px; border: 1px solid var(--border);
+        }
+        .job-expire-badge {
+            font-size: 11px; padding: 2px 8px; border-radius: 4px; margin-left: 8px;
+        }
+        .job-expire-badge.active {
+            background: rgba(46,213,115,0.15); color: var(--success);
+        }
+        .job-expire-badge.warning {
+            background: rgba(255,193,7,0.15); color: #ffc107;
+        }
+        .job-expire-badge.expired {
+            background: rgba(255,71,87,0.1); color: var(--error);
+        }
+    </style>
+
+    <script src="/static/js/auth.js"></script>
     <script>
     function escapeHtml(str) {
         const div = document.createElement('div');
@@ -24,7 +48,8 @@
     }
 
     async function loadJobs() {
-        const resp = await fetch('/api/jobs/');
+        const resp = await authFetch('/api/jobs/');
+        if (!resp || !resp.ok) return;
         const jobs = await resp.json();
         const list = document.getElementById('job-list');
 
@@ -39,6 +64,7 @@
                     <span class="job-status status-${escapeHtml(job.status)}">${escapeHtml(statusLabel(job.status))}</span>
                     <span class="job-id">${escapeHtml(job.job_id)}</span>
                     <span class="job-date">${new Date(job.created_at).toLocaleString('ko-KR')}</span>
+                    ${expireBadge(job)}
                 </div>
                 <p class="job-step">${escapeHtml(job.current_step || '')}</p>
                 ${jobActions(job)}
@@ -46,7 +72,23 @@
         `).join('');
     }
 
+    function expireBadge(job) {
+        if (job.files_expired) {
+            return '<span class="job-expire-badge expired">파일 만료됨</span>';
+        }
+        if (job.days_remaining !== null && job.days_remaining !== undefined) {
+            if (job.days_remaining <= 7) {
+                return `<span class="job-expire-badge warning">D-${job.days_remaining}</span>`;
+            }
+            return `<span class="job-expire-badge active">D-${job.days_remaining}</span>`;
+        }
+        return '';
+    }
+
     function jobActions(job) {
+        if (job.files_expired) {
+            return '<span class="text-dim" style="font-size:12px">파일이 삭제되었습니다 (30일 경과)</span>';
+        }
         if (job.video_url) {
             return `<a href="${escapeHtml(job.video_url)}" class="btn-small btn-primary" download>다운로드</a>`;
         }

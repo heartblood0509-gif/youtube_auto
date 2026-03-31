@@ -43,6 +43,32 @@ header h1 {
     font-size: 14px;
 }
 
+/* 사용자 정보 & 로그아웃 */
+.user-info {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0;
+}
+.user-name {
+    color: var(--text-dim);
+    font-size: 13px;
+}
+.btn-logout {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: border-color 0.2s, color 0.2s;
+}
+.btn-logout:hover {
+    border-color: var(--error);
+    color: var(--error);
+}
+
 /* 카드 */
 .card {
     background: var(--surface);
@@ -725,6 +751,29 @@ input[type="range"] {
 .bgm-play-btn.playing {
     border-color: var(--primary);
     color: var(--primary);
+}
+.bgm-upload-area {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+.bgm-delete-btn {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    font-size: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid transparent;
+    cursor: pointer;
+    margin-left: 4px;
+}
+.bgm-delete-btn:hover {
+    color: var(--error);
+    border-color: var(--error);
 }
 .bgm-start-input-row {
     display: flex;

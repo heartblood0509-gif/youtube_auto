@@ -157,7 +157,7 @@ async function generateTitles() {
 
     try {
         const payload = { topic, ...getCategoryPayload() };
-        const resp = await fetch('/api/generate/titles', {
+        const resp = await authFetch('/api/generate/titles', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
@@ -229,7 +229,7 @@ async function generateNarration() {
             ...getCategoryPayload(),
         };
 
-        const resp = await fetch('/api/generate/narration', {
+        const resp = await authFetch('/api/generate/narration', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
@@ -321,7 +321,7 @@ async function generateImagePrompts() {
         const category = document.getElementById('category').value;
         const payload = { narration_lines: narrationLines, style, category };
 
-        const resp = await fetch('/api/generate/image-prompts', {
+        const resp = await authFetch('/api/generate/image-prompts', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
@@ -411,7 +411,7 @@ async function loadEmotions(voiceId) {
     container.innerHTML = '<p class="text-dim">감정 목록 로딩 중...</p>';
 
     try {
-        const resp = await fetch(`/api/tts/emotions?voice_id=${encodeURIComponent(voiceId)}`);
+        const resp = await authFetch(`/api/tts/emotions?voice_id=${encodeURIComponent(voiceId)}`);
         if (!resp.ok) throw new Error('조회 실패');
         const emotions = await resp.json();
 
@@ -464,7 +464,7 @@ document.getElementById('voice-preview-btn').addEventListener('click', async fun
         const speed = document.getElementById('tts-speed').value;
         const emotion = engine === 'typecast' ? document.getElementById('tts-emotion').value : 'normal';
         const url = `/api/tts/preview?engine=${encodeURIComponent(engine)}&voice_id=${encodeURIComponent(voiceId)}&speed=${speed}&emotion=${encodeURIComponent(emotion)}`;
-        const resp = await fetch(url);
+        const resp = await authFetch(url);
         if (!resp.ok) throw new Error(`미리듣기 실패: ${resp.status}`);
 
         const blob = await resp.blob();
@@ -563,7 +563,7 @@ async function createJob() {
     showLoading('작업 등록 중...');
 
     try {
-        const resp = await fetch('/api/jobs/', {
+        const resp = await authFetch('/api/jobs/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
@@ -687,7 +687,7 @@ function escapeHtml(str) {
 // ──────────────────────────────────
 async function loadBgmList() {
     try {
-        const resp = await fetch('/api/assets/bgm');
+        const resp = await authFetch('/api/assets/bgm');
         if (!resp.ok) return;
         bgmList = await resp.json();
         renderBgmList();
@@ -701,7 +701,7 @@ async function loadBgmList() {
 function renderBgmList() {
     const container = document.getElementById('bgm-list');
     if (bgmList.length === 0) {
-        container.innerHTML = '<p class="text-dim">bgm/ 폴더에 MP3 파일이 없습니다</p>';
+        container.innerHTML = '<p class="text-dim">BGM을 업로드하세요</p>';
         return;
     }
     container.innerHTML = bgmList.map((bgm, i) => `
@@ -714,8 +714,54 @@ function renderBgmList() {
                     title="미리듣기">
                 ${bgmAudio && bgmAudio._bgmIdx === i ? '■' : '▶'}
             </button>
+            ${bgm.id ? `<button class="btn-small bgm-delete-btn" onclick="event.stopPropagation(); deleteBgm('${bgm.id}', ${i})" title="삭제">✕</button>` : ''}
         </div>
     `).join('');
+}
+
+// ── BGM 업로드 ──
+document.getElementById('bgm-upload-input')?.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const btn = document.getElementById('bgm-upload-btn');
+    btn.textContent = '업로드 중...';
+    btn.disabled = true;
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+        const resp = await authFetch('/api/assets/bgm', { method: 'POST', body: formData });
+        if (!resp.ok) {
+            const err = await resp.json();
+            throw new Error(err.detail || '업로드 실패');
+        }
+        await loadBgmList();
+    } catch (err) {
+        alert(err.message);
+    } finally {
+        btn.textContent = '+ BGM 업로드';
+        btn.disabled = false;
+        e.target.value = '';
+    }
+});
+
+async function deleteBgm(bgmId, index) {
+    if (!confirm('이 BGM을 삭제하시겠습니까?')) return;
+    try {
+        const resp = await authFetch(`/api/assets/bgm/${bgmId}`, { method: 'DELETE' });
+        if (!resp.ok) {
+            const err = await resp.json();
+            throw new Error(err.detail || '삭제 실패');
+        }
+        if (selectedBgm === bgmList[index]?.filename) {
+            selectedBgm = null;
+            bgmDuration = 0;
+        }
+        await loadBgmList();
+    } catch (err) {
+        alert(err.message);
+    }
 }
 
 function selectBgm(index) {

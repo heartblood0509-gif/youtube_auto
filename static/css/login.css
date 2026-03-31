@@ -1,0 +1,241 @@
+/* 로그인 페이지 전용 스타일 */
+
+.login-wrapper {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    padding: 20px;
+}
+
+.login-container {
+    width: 100%;
+    max-width: 420px;
+}
+
+.login-header {
+    text-align: center;
+    margin-bottom: 32px;
+}
+.login-header h1 {
+    font-size: 28px;
+    color: var(--primary);
+    margin-bottom: 8px;
+}
+.login-header p {
+    color: var(--text-dim);
+    font-size: 14px;
+}
+
+/* 탭 */
+.auth-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 24px;
+}
+.auth-tab {
+    flex: 1;
+    padding: 12px;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 15px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: color 0.2s, border-color 0.2s;
+}
+.auth-tab.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+}
+.auth-tab:hover {
+    color: var(--text);
+}
+
+/* 패널 */
+.auth-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    margin-bottom: 16px;
+}
+.auth-panel h3 {
+    color: var(--primary);
+    font-size: 18px;
+    margin-bottom: 8px;
+}
+.modal-desc {
+    color: var(--text-dim);
+    font-size: 13px;
+    margin-bottom: 20px;
+}
+
+/* 입력 필드 - email, password도 스타일 적용 */
+.auth-panel input[type="email"],
+.auth-panel input[type="password"],
+.auth-panel input[type="text"] {
+    width: 100%;
+    padding: 10px 14px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    color-scheme: dark;
+    font-size: 15px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+.auth-panel input:focus {
+    border-color: var(--primary);
+}
+
+/* 소셜 로그인 */
+.social-login {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 20px;
+}
+.btn-social {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    padding: 12px;
+    border: none;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+.btn-social:hover {
+    opacity: 0.9;
+}
+
+.btn-kakao {
+    background: #FEE500;
+    color: #3C1E1E;
+}
+.btn-google {
+    background: #fff;
+    color: #333;
+    border: 1px solid #ddd;
+}
+
+/* 구분선 */
+.divider {
+    display: flex;
+    align-items: center;
+    margin: 20px 0;
+    color: var(--text-dim);
+    font-size: 13px;
+}
+.divider::before, .divider::after {
+    content: '';
+    flex: 1;
+    border-top: 1px solid var(--border);
+}
+.divider span {
+    padding: 0 12px;
+}
+
+/* 버튼 */
+.btn-primary {
+    background: var(--primary);
+    color: #000;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 24px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+.btn-primary:hover {
+    background: var(--primary-hover);
+}
+.btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.btn-full {
+    width: 100%;
+}
+.btn-secondary {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    border-radius: 8px;
+    padding: 10px 24px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: border-color 0.2s, color 0.2s;
+}
+.btn-secondary:hover {
+    border-color: var(--text-dim);
+    color: var(--text);
+}
+.btn-back {
+    margin-top: 12px;
+}
+
+/* 링크 */
+.auth-links {
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-dim);
+}
+.auth-links a {
+    color: var(--text-dim);
+    text-decoration: none;
+    transition: color 0.2s;
+}
+.auth-links a:hover {
+    color: var(--primary);
+}
+.divider-dot {
+    margin: 0 8px;
+    color: var(--border);
+}
+
+/* 에러/성공 메시지 */
+.auth-error {
+    background: rgba(255, 71, 87, 0.1);
+    border: 1px solid var(--error);
+    color: var(--error);
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 14px;
+    margin-bottom: 16px;
+}
+.auth-success {
+    background: rgba(46, 213, 115, 0.1);
+    border: 1px solid var(--success);
+    color: var(--success);
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 14px;
+    margin-bottom: 16px;
+}
+
+/* 검색 결과 */
+#find-email-result {
+    margin-top: 16px;
+    padding: 12px;
+    background: var(--bg);
+    border-radius: 8px;
+    font-size: 14px;
+}
+#find-email-result .masked-email {
+    color: var(--primary);
+    font-weight: 600;
+    display: block;
+    margin: 4px 0;
+}
+
+.hidden {
+    display: none !important;
+}

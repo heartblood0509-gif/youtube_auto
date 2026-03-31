@@ -143,6 +143,8 @@ class JobResponse(BaseModel):
     completed_at: Optional[str] = None
     video_url: Optional[str] = None
     error: Optional[str] = None
+    files_expired: bool = False
+    days_remaining: Optional[int] = None
 
 
 class PreviewResponse(BaseModel):
@@ -156,3 +158,60 @@ class ClipPreviewResponse(BaseModel):
     lines: list[ScriptLine]
     clip_urls: list[str]
     image_urls: list[str]
+
+
+# ── 인증 ──
+
+class RegisterRequest(BaseModel):
+    email: str = Field(..., pattern=r'^[\w\.\+\-]+@[\w\.\-]+\.\w+$')
+    password: str = Field(..., min_length=8, max_length=100)
+    nickname: str = Field(..., min_length=2, max_length=30)
+    invite_code: Optional[str] = None
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class UserResponse(BaseModel):
+    id: str
+    email: str
+    nickname: Optional[str]
+    role: str
+    provider: str
+    has_gemini_key: bool = False
+    has_typecast_key: bool = False
+    has_fal_key: bool = False
+
+
+class PasswordResetRequest(BaseModel):
+    email: str
+
+
+class PasswordResetConfirm(BaseModel):
+    token: str
+    new_password: str = Field(..., min_length=8, max_length=100)
+
+
+class FindEmailRequest(BaseModel):
+    nickname: str = Field(..., min_length=1, max_length=30)
+
+
+class FindEmailResponse(BaseModel):
+    masked_emails: list[str]
+    message: str
+
+
+# ── API 키 설정 ──
+
+class ApiKeysUpdateRequest(BaseModel):
+    gemini_api_key: Optional[str] = None
+    typecast_api_key: Optional[str] = None
+    fal_key: Optional[str] = None
+
+
+class ApiKeysResponse(BaseModel):
+    gemini: Optional[str] = None
+    typecast: Optional[str] = None
+    fal: Optional[str] = None

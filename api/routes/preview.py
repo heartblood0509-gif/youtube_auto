@@ -6,8 +6,9 @@ from pydantic import BaseModel
 from typing import Optional
 from sqlalchemy.orm import Session
 from api.models import PreviewResponse, ClipPreviewResponse, ScriptLine
+from api.deps import get_current_user, get_user_job
 from db.database import get_db
-from db.models import Job
+from db.models import Job, User
 from config import settings
 from PIL import Image, ImageOps
 import json
@@ -21,11 +22,10 @@ router = APIRouter(prefix="/api/jobs", tags=["preview"])
 async def get_preview(
     job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """생성된 이미지 + 대본 미리보기"""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다")
+    job = get_user_job(db, job_id, _user)
     if job.status not in ("preview_ready", "awaiting_confirmation", "regenerating_image"):
         raise HTTPException(status_code=400, detail=f"미리보기 불가 (상태: {job.status})")
 
@@ -41,6 +41,7 @@ async def confirm_and_render(
     job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
     background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """미리보기 확인 → AI 영상이면 클립 생성, Ken Burns면 바로 영상 조립"""
     # Request body에서 video_mode 직접 읽기
@@ -51,9 +52,7 @@ async def confirm_and_render(
     video_mode = body.get("video_mode", "kenburns") or "kenburns"
     print(f"[DEBUG confirm] job_id={job_id}, raw_body={body}, video_mode={video_mode}")
 
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다")
+    job = get_user_job(db, job_id, _user)
     if job.status not in ("preview_ready", "awaiting_confirmation"):
         raise HTTPException(status_code=400, detail=f"확정 불가 (상태: {job.status})")
 
@@ -88,11 +87,10 @@ async def regenerate_image(
     body: RegenerateRequest = RegenerateRequest(),
     background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """특정 이미지 재생성 (한글 요청어 → 영어 프롬프트 변환)"""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다")
+    job = get_user_job(db, job_id, _user)
 
     lines = json.loads(job.script_json)
     if line_index < 0 or line_index >= len(lines):
@@ -111,11 +109,10 @@ async def upload_image(
     line_index: int = 0,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """사용자 이미지 업로드 — AI 이미지 대체"""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다")
+    job = get_user_job(db, job_id, _user)
 
     lines = json.loads(job.script_json)
     if line_index < 0 or line_index >= len(lines):
@@ -154,6 +151,10 @@ async def upload_image(
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     img.save(output_path, "PNG")
 
+    from core.r2_storage import upload_file as r2_upload, is_r2_enabled
+    if is_r2_enabled():
+        await r2_upload(output_path, f"jobs/{job_id}/images/img_{line_index:02d}.png")
+
     return {"message": f"이미지 {line_index + 1} 업로드 완료", "image_url": f"/api/jobs/{job_id}/images/{line_index}"}
 
 
@@ -187,11 +188,10 @@ async def _regenerate_single_image(job_id: str, line_index: int, korean_request:
 async def get_clip_preview(
     job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """AI 클립 미리보기 데이터"""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다")
+    job = get_user_job(db, job_id, _user)
     if job.status not in ("clips_ready", "awaiting_confirmation"):
         raise HTTPException(status_code=400, detail=f"클립 미리보기 불가 (상태: {job.status})")
 
@@ -206,13 +206,25 @@ async def get_clip_preview(
 async def get_clip_file(
     job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
     index: int = 0,
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """개별 클립 파일 서빙"""
+    from fastapi.responses import StreamingResponse
+    from core.r2_storage import is_r2_enabled, r2_file_exists, stream_from_r2
+
+    get_user_job(db, job_id, _user)
     job_dir = os.path.join(settings.STORAGE_DIR, job_id)
     clip_path = os.path.join(job_dir, "clips", f"clip_raw_{index:02d}.mp4")
-    if not os.path.exists(clip_path):
-        raise HTTPException(status_code=404, detail="클립 파일 없음")
-    return FileResponse(clip_path, media_type="video/mp4")
+
+    if os.path.exists(clip_path):
+        return FileResponse(clip_path, media_type="video/mp4")
+
+    r2_key = f"jobs/{job_id}/clips/clip_raw_{index:02d}.mp4"
+    if is_r2_enabled() and r2_file_exists(r2_key):
+        return StreamingResponse(stream_from_r2(r2_key), media_type="video/mp4")
+
+    raise HTTPException(status_code=404, detail="클립 파일 없음")
 
 
 @router.post("/{job_id}/regenerate-clip/{line_index}")
@@ -221,11 +233,10 @@ async def regenerate_clip(
     line_index: int = 0,
     background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """특정 AI 클립 재생성"""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다")
+    job = get_user_job(db, job_id, _user)
 
     lines = json.loads(job.script_json)
     if line_index < 0 or line_index >= len(lines):
@@ -240,11 +251,10 @@ async def confirm_clips_and_render(
     job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
     background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """AI 클립 확인 → TTS + 영상 조립 시작"""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다")
+    job = get_user_job(db, job_id, _user)
     if job.status not in ("clips_ready", "awaiting_confirmation"):
         raise HTTPException(status_code=400, detail=f"확정 불가 (상태: {job.status})")
 
@@ -262,11 +272,10 @@ async def upload_clip(
     line_index: int = 0,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """사용자 영상 업로드 — AI 클립 대체"""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다")
+    job = get_user_job(db, job_id, _user)
 
     lines = json.loads(job.script_json)
     if line_index < 0 or line_index >= len(lines):
@@ -311,6 +320,11 @@ async def upload_clip(
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
+
+    from core.r2_storage import upload_file as r2_upload, is_r2_enabled
+    clip_output = os.path.join(clips_dir, f"clip_raw_{line_index:02d}.mp4")
+    if is_r2_enabled() and os.path.exists(clip_output):
+        await r2_upload(clip_output, f"jobs/{job_id}/clips/clip_raw_{line_index:02d}.mp4")
 
     return {"message": f"클립 {line_index + 1} 업로드 완료", "clip_url": f"/api/jobs/{job_id}/clips/{line_index}"}
 

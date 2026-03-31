@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     TYPECAST_API_KEY: str = ""
     FAL_KEY: str = ""
 
+    # 데이터베이스 (빈 값이면 로컬 SQLite, Railway 배포 시 자동 설정)
+    DATABASE_URL: str = ""
+
     # 경로
     BASE_DIR: str = BASE_DIR
     STORAGE_DIR: str = os.path.join(BASE_DIR, "storage")
@@ -31,6 +34,41 @@ class Settings(BaseSettings):
     GEMINI_TEXT_MODEL: str = "gemini-2.5-flash"
     GEMINI_IMAGE_MODEL: str = "gemini-3.1-flash-image-preview"
 
+    # JWT 인증
+    JWT_SECRET: str = ""
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # 회원가입 초대 코드 (빈 값이면 초대 코드 없이 가입 가능)
+    INVITE_CODE: str = ""
+
+    # 서비스 기본 URL (비밀번호 재설정 이메일 링크 등에 사용)
+    BASE_URL: str = "http://localhost:8000"
+
+    # OAuth - Google
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/auth/google/callback"
+
+    # OAuth - Kakao
+    KAKAO_CLIENT_ID: str = ""
+    KAKAO_CLIENT_SECRET: str = ""
+    KAKAO_REDIRECT_URI: str = "http://localhost:8000/api/auth/kakao/callback"
+
+    # SMTP (비밀번호 재설정 이메일)
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+
+    # Cloudflare R2 (빈 값이면 로컬 전용)
+    R2_ENDPOINT_URL: str = ""
+    R2_ACCESS_KEY_ID: str = ""
+    R2_SECRET_ACCESS_KEY: str = ""
+    R2_BUCKET_NAME: str = ""
+    R2_PRESIGN_EXPIRE_SECONDS: int = 3600
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
@@ -38,8 +76,10 @@ settings = Settings()
 
 
 def find_font(bold=True):
-    """시스템에서 한국어 폰트 탐색"""
+    """시스템에서 한국어 폰트 탐색 (Windows / macOS / Linux)"""
+    import glob as _glob
     home = os.path.expanduser("~")
+
     if sys.platform == "win32":
         if bold:
             candidates = [
@@ -55,7 +95,7 @@ def find_font(bold=True):
                 "C:/Windows/Fonts/malgun.ttf",
                 "C:/Windows/Fonts/NanumGothic.ttf",
             ]
-    else:
+    elif sys.platform == "darwin":
         if bold:
             candidates = [
                 f"{home}/Library/Fonts/GmarketSansTTFBold.ttf",
@@ -69,6 +109,19 @@ def find_font(bold=True):
                 f"{home}/Library/Fonts/Pretendard-Regular.ttf",
                 "/System/Library/Fonts/AppleSDGothicNeo.ttc",
             ]
+    else:
+        # Linux (Docker) — glob으로 실제 설치된 Noto CJK 폰트 탐색
+        pattern = "**/NotoSansCJK*Bold*" if bold else "**/NotoSansCJK*Regular*"
+        found = _glob.glob(f"/usr/share/fonts/{pattern}", recursive=True)
+        if found:
+            return found[0]
+        # 폴백 후보
+        fallback = "NotoSansCJK-Bold.ttc" if bold else "NotoSansCJK-Regular.ttc"
+        candidates = [
+            f"/usr/share/fonts/opentype/noto/{fallback}",
+            f"/usr/share/fonts/truetype/noto/{fallback}",
+        ]
+
     for path in candidates:
         if os.path.exists(path):
             return path

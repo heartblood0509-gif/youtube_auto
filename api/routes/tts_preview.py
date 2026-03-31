@@ -4,13 +4,17 @@ import asyncio
 import os
 import re
 
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Query, HTTPException, Depends
 from fastapi.responses import FileResponse
 
 import requests as http_requests
 
+from sqlalchemy.orm import Session
 from config import settings
 from core.tts_engines import generate_tts_edge, generate_tts_typecast
+from api.deps import get_current_user, resolve_user_api_keys
+from db.database import get_db
+from db.models import User
 
 router = APIRouter(prefix="/api/tts", tags=["tts"])
 
@@ -20,11 +24,11 @@ SAMPLE_TEXT = "안녕하세요, 반갑습니다."
 _SAFE_FILENAME = re.compile(r"^[\w\-]+$")
 
 
-def _cache_path(engine: str, voice_id: str, speed: float, emotion: str) -> str:
+def _cache_path(user_id: str, engine: str, voice_id: str, speed: float, emotion: str) -> str:
     safe_id = voice_id.replace("-", "_")
     return os.path.join(
         PREVIEW_DIR,
-        f"{engine}_{safe_id}_s{speed}_{emotion}.mp3"
+        f"{user_id}_{engine}_{safe_id}_s{speed}_{emotion}.mp3"
     )
 
 
@@ -39,15 +43,16 @@ EMOTION_LABELS = {
 
 
 @router.get("/emotions")
-async def get_voice_emotions(voice_id: str = Query(..., min_length=1)):
+async def get_voice_emotions(voice_id: str = Query(..., min_length=1), db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
     """Typecast 성우의 지원 감정 목록 반환"""
-    api_key = settings.TYPECAST_API_KEY
-    if not api_key:
-        raise HTTPException(500, "TYPECAST_API_KEY 미설정")
+    keys = resolve_user_api_keys(db, _user.id)
+    tc_key = keys["typecast"]
+    if not tc_key:
+        raise HTTPException(500, "Typecast API 키가 설정되지 않았습니다. 설정 페이지에서 키를 입력하세요.")
 
     resp = http_requests.get(
         f"https://api.typecast.ai/v1/voices/{voice_id}",
-        headers={"X-API-KEY": api_key},
+        headers={"X-API-KEY": tc_key},
     )
     if resp.status_code != 200:
         raise HTTPException(resp.status_code, "성우 정보 조회 실패")
@@ -88,13 +93,17 @@ async def tts_preview(
     voice_id: str = Query(..., min_length=1, max_length=100),
     speed: float = Query(default=1.0, ge=0.5, le=2.0),
     emotion: str = Query(default="normal", max_length=20),
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """선택한 엔진+음성+속도+감정으로 샘플 오디오 생성/반환"""
+    keys = resolve_user_api_keys(db, _user.id)
+
     if not _SAFE_FILENAME.match(voice_id.replace("-", "_").replace(".", "_")):
         raise HTTPException(400, "잘못된 voice_id 형식입니다")
 
     os.makedirs(PREVIEW_DIR, exist_ok=True)
-    cached = _cache_path(engine, voice_id, speed, emotion)
+    cached = _cache_path(_user.id, engine, voice_id, speed, emotion)
 
     if os.path.exists(cached):
         media_type = "audio/mpeg" if cached.endswith(".mp3") else "audio/wav"
@@ -116,7 +125,8 @@ async def tts_preview(
             emo = emotion if emotion != "normal" else None
             await asyncio.to_thread(
                 generate_tts_typecast, tmp_dir, sentences,
-                voice_id=voice_id, speed=speed, emotion=emo
+                voice_id=voice_id, speed=speed, emotion=emo,
+                api_key=keys["typecast"],
             )
             wav_path = os.path.join(tmp_dir, "sent_00.wav")
             if os.path.exists(wav_path):

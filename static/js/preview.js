@@ -13,7 +13,7 @@ async function loadPreview() {
     }
 
     try {
-        const resp = await fetch(`/api/jobs/${jobId}/preview`);
+        const resp = await authFetch(`/api/jobs/${jobId}/preview`);
         if (!resp.ok) {
             const err = await resp.json();
             throw new Error(err.detail || '미리보기 로드 실패');
@@ -116,7 +116,7 @@ async function doRegenerate(index, koreanRequest, englishPrompt = null) {
             bodyData.korean_request = koreanRequest;
         }
 
-        const resp = await fetch(`/api/jobs/${jobId}/regenerate-image/${index}`, {
+        const resp = await authFetch(`/api/jobs/${jobId}/regenerate-image/${index}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(bodyData),
@@ -138,7 +138,7 @@ async function doRegenerate(index, koreanRequest, englishPrompt = null) {
                     return;
                 }
                 try {
-                    const statusResp = await fetch(`/api/jobs/${jobId}`);
+                    const statusResp = await authFetch(`/api/jobs/${jobId}`);
                     const job = await statusResp.json();
                     if (job.status === 'failed') {
                         clearInterval(interval);
@@ -167,7 +167,7 @@ async function doRegenerate(index, koreanRequest, englishPrompt = null) {
                         overlay.style.display = 'none';
                         regenBtns.forEach(btn => btn.disabled = false);
                         // 프롬프트 데이터 갱신
-                        const freshResp = await fetch(`/api/jobs/${jobId}/preview`);
+                        const freshResp = await authFetch(`/api/jobs/${jobId}/preview`);
                         if (freshResp.ok) {
                             previewData = await freshResp.json();
                             const textarea = document.getElementById(`eng-prompt-${index}`);
@@ -236,7 +236,7 @@ async function handleUpload(index, input) {
         const formData = new FormData();
         formData.append('file', file);
 
-        const resp = await fetch(`/api/jobs/${jobId}/upload-image/${index}`, {
+        const resp = await authFetch(`/api/jobs/${jobId}/upload-image/${index}`, {
             method: 'POST',
             body: formData,
         });
@@ -268,7 +268,7 @@ async function confirmAndRender() {
 
     try {
         const videoMode = getSelectedVideoMode();
-        const resp = await fetch(`/api/jobs/${jobId}/confirm`, {
+        const resp = await authFetch(`/api/jobs/${jobId}/confirm`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ video_mode: videoMode }),

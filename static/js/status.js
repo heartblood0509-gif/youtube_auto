@@ -205,7 +205,7 @@ function handleRenderPhase(data) {
 function startPolling() {
     var interval = setInterval(async function() {
         try {
-            var resp = await fetch('/api/jobs/' + jobId);
+            var resp = await authFetch('/api/jobs/' + jobId);
             var data = await resp.json();
 
             if (phase === 'images') {
@@ -271,7 +271,7 @@ async function retryImages() {
     if (!jobId) return;
 
     try {
-        var resp = await fetch('/api/jobs/' + jobId + '/retry-images', { method: 'POST' });
+        var resp = await authFetch('/api/jobs/' + jobId + '/retry-images', { method: 'POST' });
         if (!resp.ok) {
             var err = await resp.json();
             alert(err.detail || '재시도 실패');

@@ -13,7 +13,7 @@ async function loadClipPreview() {
     }
 
     try {
-        const resp = await fetch(`/api/jobs/${jobId}/clip-preview`);
+        const resp = await authFetch(`/api/jobs/${jobId}/clip-preview`);
         if (!resp.ok) {
             const err = await resp.json();
             throw new Error(err.detail || '클립 미리보기 로드 실패');
@@ -66,7 +66,7 @@ async function regenerateClip(index) {
     btns.forEach(btn => btn.disabled = true);
 
     try {
-        const resp = await fetch(`/api/jobs/${jobId}/regenerate-clip/${index}`, {
+        const resp = await authFetch(`/api/jobs/${jobId}/regenerate-clip/${index}`, {
             method: 'POST',
         });
 
@@ -88,7 +88,7 @@ async function regenerateClip(index) {
                 }
 
                 try {
-                    const statusResp = await fetch(`/api/jobs/${jobId}`);
+                    const statusResp = await authFetch(`/api/jobs/${jobId}`);
                     const job = await statusResp.json();
 
                     if (job.status === 'failed') {
@@ -158,7 +158,7 @@ async function handleClipUpload(index, input) {
         const formData = new FormData();
         formData.append('file', file);
 
-        const resp = await fetch(`/api/jobs/${jobId}/upload-clip/${index}`, {
+        const resp = await authFetch(`/api/jobs/${jobId}/upload-clip/${index}`, {
             method: 'POST',
             body: formData,
         });
@@ -187,7 +187,7 @@ async function confirmClipsAndRender() {
     btn.textContent = '영상 제작 시작 중...';
 
     try {
-        const resp = await fetch(`/api/jobs/${jobId}/confirm-clips`, {
+        const resp = await authFetch(`/api/jobs/${jobId}/confirm-clips`, {
             method: 'POST',
         });
         if (!resp.ok) {

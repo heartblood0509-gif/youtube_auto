@@ -1,6 +1,6 @@
 """SQLAlchemy ORM 모델"""
 
-from sqlalchemy import Column, String, Float, Text, DateTime
+from sqlalchemy import Column, String, Float, Text, DateTime, Index
 from sqlalchemy.orm import declarative_base
 import uuid
 import datetime
@@ -8,10 +8,40 @@ import datetime
 Base = declarative_base()
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex)
+    email = Column(String, unique=True, nullable=False, index=True)
+    nickname = Column(String, nullable=True)
+    hashed_password = Column(String, nullable=True)
+    role = Column(String, default="user")
+    provider = Column(String, default="email")
+    provider_id = Column(String, nullable=True)
+    reset_token = Column(String, nullable=True)
+    reset_token_expires = Column(DateTime, nullable=True)
+    gemini_api_key_enc = Column(String, nullable=True)
+    typecast_api_key_enc = Column(String, nullable=True)
+    fal_key_enc = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class UserBgm(Base):
+    __tablename__ = "user_bgms"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    user_id = Column(String, nullable=False, index=True)
+    filename = Column(String, nullable=False)
+    duration = Column(Float, default=0.0)
+    r2_key = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
 class Job(Base):
     __tablename__ = "jobs"
 
     id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    user_id = Column(String, nullable=True, index=True)
     status = Column(String, default="pending")
     progress = Column(Float, default=0.0)
     current_step = Column(String, default="")
@@ -35,6 +65,10 @@ class Job(Base):
     # 출력
     video_path = Column(String, nullable=True)
     error_message = Column(Text, nullable=True)
+
+    # R2 동기화
+    r2_synced = Column(String, default="none")
+    files_expired_at = Column(DateTime, nullable=True)
 
     # 시간
     created_at = Column(DateTime, default=datetime.datetime.utcnow)

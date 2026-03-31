@@ -11,6 +11,7 @@
         <header>
             <h1>AI 쇼츠 자동 제작</h1>
             <p class="subtitle">주제만 입력하면 영상이 완성됩니다</p>
+            <div id="user-info" class="user-info hidden"></div>
             <a href="/static/history.html" class="btn-secondary btn-small">작업 이력</a>
             <a href="https://cactus.tistory.com/306" target="_blank" rel="noopener" class="btn-secondary btn-small">Pretendard 폰트 다운로드</a>
         </header>
@@ -277,6 +278,11 @@
 
                 <div class="form-group">
                     <label>BGM 선택</label>
+                    <div class="bgm-upload-area">
+                        <input type="file" id="bgm-upload-input" accept=".mp3,.wav,.ogg" hidden>
+                        <button class="btn-secondary btn-small" onclick="document.getElementById('bgm-upload-input').click()" id="bgm-upload-btn">+ BGM 업로드</button>
+                        <span class="text-dim" style="font-size:12px">MP3, WAV, OGG (최대 20MB)</span>
+                    </div>
                     <div id="bgm-list" class="bgm-grid">
                         <p class="text-dim">BGM 목록 로딩 중...</p>
                     </div>
@@ -326,6 +332,7 @@
         </section>
     </div>
 
+    <script src="/static/js/auth.js"></script>
     <script src="/static/js/app.js"></script>
 </body>
 </html>
