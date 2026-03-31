@@ -27,6 +27,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 앱 코드 + BGM 복사
 COPY . .
 
+# Pretendard 폰트를 시스템 폰트 디렉토리에 설치
+RUN mkdir -p /usr/share/fonts/pretendard \
+    && cp fonts/*.otf /usr/share/fonts/pretendard/ \
+    && fc-cache -f
+
 # 디렉토리 생성 + 권한 설정
 RUN mkdir -p /app/storage /app/bgm && chown -R appuser:appuser /app
 
