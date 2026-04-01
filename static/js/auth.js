@@ -1,5 +1,9 @@
 /* 인증 유틸리티 - 모든 페이지에서 공유 */
 
+let currentUser = null;
+let _authReady;
+const authReady = new Promise(resolve => { _authReady = resolve; });
+
 /**
  * fetch 래퍼: credentials 자동 포함 + 401 시 토큰 갱신 또는 로그인 리다이렉트
  */
@@ -37,6 +41,8 @@ async function checkAuth() {
         const resp = await fetch('/api/auth/me', { credentials: 'same-origin' });
         if (resp.ok) {
             const data = await resp.json();
+            currentUser = data.user;
+            _authReady(currentUser);
             updateUserUI(data.user);
             return true;
         }
@@ -48,6 +54,8 @@ async function checkAuth() {
         });
         if (refreshResp.ok) {
             const data = await refreshResp.json();
+            currentUser = data.user;
+            _authReady(currentUser);
             updateUserUI(data.user);
             return true;
         }

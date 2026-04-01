@@ -16,7 +16,7 @@ import os
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
 
-def _job_to_response(job: Job) -> JobResponse:
+def _job_to_response(job: Job, user_map: dict | None = None) -> JobResponse:
     import datetime as _dt
     video_url = None
     if job.video_path and os.path.exists(job.video_path):
@@ -30,6 +30,14 @@ def _job_to_response(job: Job) -> JobResponse:
         if days_remaining == 0:
             files_expired = True
 
+    topic = job.topic if user_map is not None else None
+    owner_nickname = None
+    owner_email = None
+    if user_map is not None and job.user_id and job.user_id in user_map:
+        owner = user_map[job.user_id]
+        owner_nickname = owner.nickname
+        owner_email = owner.email
+
     return JobResponse(
         job_id=job.id,
         status=job.status,
@@ -41,6 +49,9 @@ def _job_to_response(job: Job) -> JobResponse:
         error=job.error_message,
         files_expired=files_expired,
         days_remaining=days_remaining,
+        topic=topic,
+        owner_nickname=owner_nickname,
+        owner_email=owner_email,
     )
 
 
@@ -95,7 +106,17 @@ async def list_jobs(limit: int = 20, db: Session = Depends(get_db), _user: User 
     if _user.role != "admin":
         query = query.filter(Job.user_id == _user.id)
     jobs = query.order_by(Job.created_at.desc()).limit(limit).all()
-    return [_job_to_response(j) for j in jobs]
+
+    user_map = None
+    if _user.role == "admin":
+        user_ids = list({j.user_id for j in jobs if j.user_id})
+        if user_ids:
+            users = db.query(User).filter(User.id.in_(user_ids)).all()
+            user_map = {u.id: u for u in users}
+        else:
+            user_map = {}
+
+    return [_job_to_response(j, user_map) for j in jobs]
 
 
 @router.get("/{job_id}", response_model=JobResponse)

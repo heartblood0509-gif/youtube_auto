@@ -142,6 +142,9 @@ class JobResponse(BaseModel):
     error: Optional[str] = None
     files_expired: bool = False
     days_remaining: Optional[int] = None
+    topic: Optional[str] = None
+    owner_nickname: Optional[str] = None
+    owner_email: Optional[str] = None
 
 
 class PreviewResponse(BaseModel):
