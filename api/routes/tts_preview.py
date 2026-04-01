@@ -12,7 +12,7 @@ import requests as http_requests
 from sqlalchemy.orm import Session
 from config import settings
 from core.tts_engines import generate_tts_edge, generate_tts_typecast
-from api.deps import get_current_user, resolve_user_api_keys
+from api.deps import get_approved_user, resolve_user_api_keys
 from db.database import get_db
 from db.models import User
 
@@ -43,7 +43,7 @@ EMOTION_LABELS = {
 
 
 @router.get("/emotions")
-async def get_voice_emotions(voice_id: str = Query(..., min_length=1), db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
+async def get_voice_emotions(voice_id: str = Query(..., min_length=1), db: Session = Depends(get_db), _user: User = Depends(get_approved_user)):
     """Typecast 성우의 지원 감정 목록 반환"""
     keys = resolve_user_api_keys(db, _user.id)
     tc_key = keys["typecast"]
@@ -94,7 +94,7 @@ async def tts_preview(
     speed: float = Query(default=1.0, ge=0.5, le=2.0),
     emotion: str = Query(default="normal", max_length=20),
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_approved_user),
 ):
     """선택한 엔진+음성+속도+감정으로 샘플 오디오 생성/반환"""
     keys = resolve_user_api_keys(db, _user.id)

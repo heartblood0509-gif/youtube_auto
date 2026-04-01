@@ -3,22 +3,27 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>설정 - AI 쇼츠 자동 제작</title>
-    <link rel="stylesheet" href="/static/css/style.css">
-    <link rel="stylesheet" href="/static/css/login.css">
+    <title>설정 - Shorts Pick</title>
+    <link rel="stylesheet" href="/static/css/style.css?v=5">
 </head>
-<body>
-    <div class="login-wrapper">
-        <div class="login-container" style="max-width: 520px;">
-            <div class="login-header">
-                <h1>API 키 설정</h1>
-                <p>각 서비스에서 발급받은 API 키를 입력하세요</p>
-            </div>
+<body class="has-navbar">
+    <script>if(localStorage.getItem('theme')==='dark'||!localStorage.getItem('theme'))document.body.classList.add('dark');</script>
+    <nav class="navbar">
+        <a href="/" class="navbar-logo">
+            <span class="navbar-logo-emoji">🎬</span>
+            <span class="navbar-logo-text">Shorts Pick</span>
+        </a>
+        <div id="navbar-right" class="navbar-right"></div>
+    </nav>
 
-            <div id="auth-error" class="auth-error hidden"></div>
-            <div id="auth-success" class="auth-success hidden"></div>
+    <div class="container" style="padding-top: 20px; max-width: 520px;">
+        <h2 class="page-title">API 키 설정</h2>
+        <p style="color: var(--text-dim); font-size: 14px; margin-bottom: 20px;">각 서비스에서 발급받은 API 키를 입력하세요</p>
 
-            <div class="auth-panel">
+        <div id="auth-error" class="auth-error hidden"></div>
+        <div id="auth-success" class="auth-success hidden"></div>
+
+        <div class="card">
                 <form id="api-keys-form" onsubmit="handleSaveKeys(event)">
 
                     <!-- Gemini -->
@@ -72,10 +77,6 @@
                 <p class="key-note">빈 칸으로 저장하면 기존 키가 삭제됩니다</p>
             </div>
 
-            <div class="auth-links">
-                <a href="/">메인으로 돌아가기</a>
-            </div>
-        </div>
     </div>
 
     <style>

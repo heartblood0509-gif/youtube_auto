@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>새소식 - Shorts Pick</title>
+    <link rel="stylesheet" href="/static/css/style.css?v=4">
+</head>
+<body class="has-navbar">
+    <script>if(localStorage.getItem('theme')==='dark'||!localStorage.getItem('theme'))document.body.classList.add('dark');</script>
+    <nav class="navbar">
+        <a href="/" class="navbar-logo">
+            <span class="navbar-logo-emoji">🎬</span>
+            <span class="navbar-logo-text">Shorts Pick</span>
+        </a>
+        <div id="navbar-right" class="navbar-right"></div>
+    </nav>
+
+    <div class="container" style="padding-top: 20px; max-width: 700px;">
+        <a href="/" class="changelog-back">← 돌아가기</a>
+        <h2 class="changelog-title">업데이트 내역</h2>
+        <p class="changelog-subtitle">Shorts Pick의 새로운 기능과 개선 사항을 확인하세요</p>
+
+        <div id="changelog-list"></div>
+    </div>
+
+    <style>
+        .changelog-back {
+            color: var(--text-dim); text-decoration: none; font-size: 14px;
+            display: inline-block; margin-bottom: 16px;
+        }
+        .changelog-back:hover { color: var(--primary); }
+        .changelog-title {
+            font-size: 24px; font-weight: 700; color: var(--text); margin-bottom: 8px;
+        }
+        .changelog-subtitle {
+            color: var(--text-dim); font-size: 14px; margin-bottom: 32px;
+        }
+
+        .changelog-entry { margin-bottom: 48px; }
+        .changelog-meta {
+            display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+        }
+        .changelog-version {
+            font-size: 13px; font-weight: 600; padding: 3px 12px;
+            border: 1.5px solid var(--primary); color: var(--primary);
+            border-radius: 16px;
+        }
+        .changelog-date { color: var(--text-dim); font-size: 14px; }
+        .changelog-latest {
+            font-size: 11px; font-weight: 700; padding: 2px 10px;
+            background: var(--success); color: #fff; border-radius: 10px;
+        }
+        .changelog-entry-title {
+            font-size: 20px; font-weight: 700; color: var(--text); margin-bottom: 20px;
+        }
+        .changelog-section { margin-bottom: 20px; }
+        .changelog-section-heading {
+            font-size: 16px; font-weight: 700; color: var(--text); margin-bottom: 8px;
+        }
+        .changelog-section-heading .emoji { margin-right: 6px; }
+        .changelog-items {
+            list-style: disc; padding-left: 20px; color: var(--text-dim); font-size: 14px;
+            line-height: 1.8;
+        }
+        .changelog-divider {
+            border: none; border-top: 1px solid var(--border); margin: 0 0 48px;
+        }
+    </style>
+
+    <script src="/static/js/auth.js"></script>
+    <script>
+    authReady.then(() => loadChangelog());
+
+    async function loadChangelog() {
+        try {
+            const resp = await fetch('/static/data/changelog.json');
+            const data = await resp.json();
+            const el = document.getElementById('changelog-list');
+
+            el.innerHTML = data.map((entry, i) => `
+                ${i > 0 ? '<hr class="changelog-divider">' : ''}
+                <div class="changelog-entry">
+                    <div class="changelog-meta">
+                        <span class="changelog-version">${esc(entry.version)}</span>
+                        <span class="changelog-date">${esc(entry.date)}</span>
+                        ${i === 0 ? '<span class="changelog-latest">최신</span>' : ''}
+                    </div>
+                    <h3 class="changelog-entry-title">${esc(entry.title)}</h3>
+                    ${entry.sections.map(sec => `
+                        <div class="changelog-section">
+                            <h4 class="changelog-section-heading">
+                                <span class="emoji">${esc(sec.emoji)}</span>${esc(sec.heading)}
+                            </h4>
+                            <ul class="changelog-items">
+                                ${sec.items.map(item => `<li>${esc(item)}</li>`).join('')}
+                            </ul>
+                        </div>
+                    `).join('')}
+                </div>
+            `).join('');
+        } catch (e) {
+            document.getElementById('changelog-list').innerHTML =
+                '<p style="color:var(--text-dim)">업데이트 내역을 불러올 수 없습니다.</p>';
+        }
+    }
+
+    function esc(str) {
+        if (!str) return '';
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+    </script>
+</body>
+</html>

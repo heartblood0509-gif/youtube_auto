@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Path, Re
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from api.models import JobCreateRequest, JobResponse, JobStatus
-from api.deps import get_current_user, get_user_job, get_user_job_by_uid
+from api.deps import get_approved_user, get_user_job, get_user_job_by_uid
 from db.database import get_db
 from db.models import Job, User
 from config import settings
@@ -60,7 +60,7 @@ async def create_job(
     request: JobCreateRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_approved_user),
 ):
     """작업 생성 → 이미지 생성 시작"""
     job = Job(
@@ -100,30 +100,17 @@ async def create_job(
 
 
 @router.get("/", response_model=list[JobResponse])
-async def list_jobs(limit: int = 20, db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
-    """작업 목록 (최신순, 본인 작업만 / admin은 전체)"""
-    query = db.query(Job)
-    if _user.role != "admin":
-        query = query.filter(Job.user_id == _user.id)
-    jobs = query.order_by(Job.created_at.desc()).limit(limit).all()
-
-    user_map = None
-    if _user.role == "admin":
-        user_ids = list({j.user_id for j in jobs if j.user_id})
-        if user_ids:
-            users = db.query(User).filter(User.id.in_(user_ids)).all()
-            user_map = {u.id: u for u in users}
-        else:
-            user_map = {}
-
-    return [_job_to_response(j, user_map) for j in jobs]
+async def list_jobs(limit: int = 20, db: Session = Depends(get_db), _user: User = Depends(get_approved_user)):
+    """작업 목록 (최신순, 본인 작업만)"""
+    jobs = db.query(Job).filter(Job.user_id == _user.id).order_by(Job.created_at.desc()).limit(limit).all()
+    return [_job_to_response(j) for j in jobs]
 
 
 @router.get("/{job_id}", response_model=JobResponse)
 async def get_job(
     job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_approved_user),
 ):
     """작업 상태 조회"""
     job = get_user_job(db, job_id, _user)
@@ -225,7 +212,7 @@ async def retry_images(
     job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
     background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_approved_user),
 ):
     """실패한 이미지 생성 재시도"""
     job = get_user_job(db, job_id, _user)

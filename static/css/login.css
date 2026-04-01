@@ -10,21 +10,49 @@
 
 .login-container {
     width: 100%;
-    max-width: 420px;
+    max-width: 400px;
 }
 
-.login-header {
+/* 화이트 카드 스타일 (로그인/승인대기) */
+.auth-panel.login-card {
+    background: #fff;
+    border: none;
+    border-radius: 20px;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12), 0 1px 4px rgba(0, 0, 0, 0.08);
+    padding: 60px 48px;
     text-align: center;
-    margin-bottom: 32px;
 }
-.login-header h1 {
-    font-size: 28px;
-    color: var(--primary);
-    margin-bottom: 8px;
+body.dark .auth-panel.login-card {
+    background: #1e1e2e;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
 }
-.login-header p {
-    color: var(--text-dim);
-    font-size: 14px;
+body.dark .login-logo-text { color: #e0e0e0; }
+body.dark .login-subtitle { color: #999; }
+body.dark .btn-google { background: #fff; color: #333; border: 1px solid #555; }
+body.dark .approval-notice { color: #888; }
+
+/* 로고 영역 */
+.login-logo {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    margin-bottom: 28px;
+}
+.login-logo-emoji {
+    font-size: 44px;
+    line-height: 1;
+}
+.login-logo-text {
+    font-size: 30px;
+    font-weight: 800;
+    color: #1a1a1a;
+    letter-spacing: -0.5px;
+}
+.login-subtitle {
+    color: #888;
+    font-size: 15px;
+    margin-bottom: 36px;
 }
 
 /* 탭 */
@@ -94,31 +122,31 @@
 .social-login {
     display: flex;
     flex-direction: column;
+    align-items: center;
     gap: 10px;
-    margin-bottom: 20px;
+    margin-bottom: 0;
 }
 .btn-social {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 10px;
-    width: 100%;
-    padding: 12px;
+    padding: 13px 40px;
     border: none;
-    border-radius: 8px;
+    border-radius: 12px;
     font-size: 15px;
     font-weight: 600;
     cursor: pointer;
-    transition: opacity 0.2s;
+    transition: background 0.2s;
 }
 .btn-social:hover {
-    opacity: 0.9;
+    opacity: 0.92;
 }
 
 .btn-google {
-    background: #fff;
-    color: #333;
-    border: 1px solid #ddd;
+    background: #1a1a1a;
+    color: #fff;
+    border: 1px solid #1a1a1a;
 }
 
 /* 구분선 */
@@ -230,6 +258,37 @@
     font-weight: 600;
     display: block;
     margin: 4px 0;
+}
+
+/* 비밀번호 토글 */
+.pw-wrapper {
+    position: relative;
+}
+.pw-wrapper input {
+    padding-right: 42px !important;
+}
+.pw-toggle {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    padding: 4px;
+    display: flex;
+    align-items: center;
+}
+.pw-toggle:hover {
+    color: var(--text);
+}
+
+.approval-notice {
+    text-align: center;
+    color: #aaa;
+    font-size: 13px;
+    margin-top: 20px;
 }
 
 .hidden {

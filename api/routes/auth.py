@@ -1,26 +1,20 @@
-"""인증 API - 회원가입, 로그인, OAuth, 비밀번호 재설정, 아이디 찾기"""
+"""인증 API - Google OAuth + 관리자 비상 로그인 + API 키 관리"""
 
 from fastapi import APIRouter, HTTPException, Depends, Response, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from db.database import get_db
 from db.models import User
-from api.models import (
-    RegisterRequest, LoginRequest, UserResponse,
-    PasswordResetRequest, PasswordResetConfirm,
-    FindEmailRequest, FindEmailResponse,
-    ApiKeysUpdateRequest, ApiKeysResponse,
-)
-from api.deps import get_current_user
+from api.models import LoginRequest, ApiKeysUpdateRequest, ApiKeysResponse
+from api.deps import get_current_user, get_approved_user
 from core.security import (
-    hash_password, verify_password,
+    verify_password,
     create_access_token, create_refresh_token, decode_token,
     encrypt_api_key, decrypt_api_key,
 )
 from config import settings
 import jwt
 import uuid
-import datetime
 import time
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -30,13 +24,12 @@ _oauth_states: dict[str, float] = {}
 
 def _create_oauth_state() -> str:
     """state 생성 + 저장 (5분 유효)"""
-    # 만료된 state 정리
     now = time.time()
     expired = [k for k, v in _oauth_states.items() if v < now]
     for k in expired:
         del _oauth_states[k]
     state = uuid.uuid4().hex
-    _oauth_states[state] = now + 300  # 5분
+    _oauth_states[state] = now + 300
     return state
 
 def _verify_oauth_state(state: str) -> bool:
@@ -74,6 +67,7 @@ def _user_response(user: User) -> dict:
         "nickname": user.nickname,
         "role": user.role,
         "provider": user.provider,
+        "approved": user.approved,
         "has_gemini_key": bool(user.gemini_api_key_enc),
         "has_typecast_key": bool(user.typecast_api_key_enc),
         "has_fal_key": bool(user.fal_key_enc),
@@ -84,48 +78,20 @@ def _user_response(user: User) -> dict:
 
 @router.get("/settings")
 async def get_auth_settings():
-    """프론트엔드에서 초대 코드 필요 여부 확인용"""
-    return {"invite_code_required": bool(settings.INVITE_CODE)}
+    """프론트엔드에서 로그인 방식 확인용"""
+    return {"google_only": True}
 
 
-# ── 이메일 회원가입/로그인 ──
-
-@router.post("/register")
-async def register(req: RegisterRequest, response: Response, db: Session = Depends(get_db)):
-    # 초대 코드 검증 (설정된 경우)
-    if settings.INVITE_CODE and req.invite_code != settings.INVITE_CODE:
-        raise HTTPException(status_code=403, detail="초대 코드가 올바르지 않습니다")
-
-    existing = db.query(User).filter(User.email == req.email).first()
-    if existing:
-        raise HTTPException(status_code=409, detail="이미 등록된 이메일입니다")
-
-    user = User(
-        id=uuid.uuid4().hex,
-        email=req.email,
-        nickname=req.nickname,
-        hashed_password=hash_password(req.password),
-        provider="email",
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-
-    _set_auth_cookies(response, user)
-    return {"message": "회원가입 완료", "user": _user_response(user)}
-
+# ── 관리자 비상 로그인 (Google OAuth 없는 환경용) ──
 
 @router.post("/login")
 async def login(req: LoginRequest, response: Response, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == req.email).first()
-    if not user:
+    if not user or not user.hashed_password:
         raise HTTPException(status_code=401, detail="이메일 또는 비밀번호가 올바르지 않습니다")
 
-    if not user.hashed_password:
-        raise HTTPException(
-            status_code=401,
-            detail="이메일 또는 비밀번호가 올바르지 않습니다"
-        )
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="관리자만 이메일 로그인이 가능합니다")
 
     if not verify_password(req.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="이메일 또는 비밀번호가 올바르지 않습니다")
@@ -192,12 +158,12 @@ async def google_callback(code: str, state: str = "", db: Session = Depends(get_
 
     try:
         user_info = await exchange_google_code(code)
-    except Exception as e:
-        return RedirectResponse(f"/static/login.html?error=google_failed")
+    except Exception:
+        return RedirectResponse("/static/login.html?error=google_failed")
 
     email = user_info.get("email")
     if not email:
-        return RedirectResponse(f"/static/login.html?error=no_email")
+        return RedirectResponse("/static/login.html?error=no_email")
 
     user = db.query(User).filter(User.email == email).first()
     if not user:
@@ -207,141 +173,18 @@ async def google_callback(code: str, state: str = "", db: Session = Depends(get_
             nickname=user_info.get("name", email.split("@")[0]),
             provider="google",
             provider_id=user_info.get("sub"),
+            approved=False,
         )
         db.add(user)
         db.commit()
         db.refresh(user)
 
-    response = RedirectResponse("/")
-    _set_auth_cookies(response, user)
-    return response
-
-
-# ── OAuth: Kakao ──
-
-@router.get("/kakao/login")
-async def kakao_login():
-    if not settings.KAKAO_CLIENT_ID:
-        raise HTTPException(status_code=500, detail="Kakao OAuth가 설정되지 않았습니다")
-
-    from core.oauth import get_kakao_auth_url
-    state = _create_oauth_state()
-    url = get_kakao_auth_url(state)
-    return RedirectResponse(url)
-
-
-@router.get("/kakao/callback")
-async def kakao_callback(code: str, state: str = "", db: Session = Depends(get_db)):
-    if not _verify_oauth_state(state):
-        return RedirectResponse("/static/login.html?error=invalid_state")
-
-    from core.oauth import exchange_kakao_code
-
-    try:
-        user_info = await exchange_kakao_code(code)
-    except Exception as e:
-        return RedirectResponse(f"/static/login.html?error=kakao_failed")
-
-    email = user_info.get("email")
-    if not email:
-        return RedirectResponse(f"/static/login.html?error=no_email")
-
-    user = db.query(User).filter(User.email == email).first()
-    if not user:
-        user = User(
-            id=uuid.uuid4().hex,
-            email=email,
-            nickname=user_info.get("nickname", email.split("@")[0]),
-            provider="kakao",
-            provider_id=str(user_info.get("id")),
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-
-    response = RedirectResponse("/")
-    _set_auth_cookies(response, user)
-    return response
-
-
-# ── 비밀번호 재설정 ──
-
-@router.post("/password-reset/request")
-async def request_password_reset(req: PasswordResetRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == req.email).first()
-    # 보안: 계정 존재 여부와 관계없이 동일한 응답
-    if not user:
-        return {"message": "등록된 이메일이라면 재설정 링크가 발송됩니다"}
-
-    if not user.hashed_password:
-        return {"message": "소셜 로그인 계정은 비밀번호 재설정이 필요하지 않습니다"}
-
-    token = uuid.uuid4().hex
-    user.reset_token = token
-    user.reset_token_expires = datetime.datetime.utcnow() + datetime.timedelta(hours=1)
-    db.commit()
-
-    # 이메일 발송
-    if settings.SMTP_USER and settings.SMTP_PASSWORD:
-        from core.email_utils import send_reset_email
-        reset_link = f"{settings.BASE_URL}/static/reset-password.html?token={token}"
-        try:
-            send_reset_email(user.email, reset_link)
-        except Exception:
-            raise HTTPException(status_code=500, detail="이메일 발송에 실패했습니다. 관리자에게 문의하세요.")
+    if user.approved:
+        response = RedirectResponse("/")
     else:
-        raise HTTPException(status_code=500, detail="이메일 설정이 완료되지 않았습니다. 관리자에게 문의하세요.")
-
-    return {"message": "등록된 이메일이라면 재설정 링크가 발송됩니다"}
-
-
-@router.post("/password-reset/confirm")
-async def confirm_password_reset(req: PasswordResetConfirm, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.reset_token == req.token).first()
-    if not user:
-        raise HTTPException(status_code=400, detail="유효하지 않은 재설정 링크입니다")
-
-    if user.reset_token_expires and user.reset_token_expires < datetime.datetime.utcnow():
-        raise HTTPException(status_code=400, detail="재설정 링크가 만료되었습니다. 다시 요청해주세요.")
-
-    user.hashed_password = hash_password(req.new_password)
-    user.reset_token = None
-    user.reset_token_expires = None
-    db.commit()
-
-    return {"message": "비밀번호가 성공적으로 변경되었습니다"}
-
-
-# ── 아이디(이메일) 찾기 ──
-
-@router.post("/find-email")
-async def find_email(req: FindEmailRequest, db: Session = Depends(get_db)):
-    # SQL 와일드카드 문자 이스케이프
-    safe_nickname = req.nickname.replace("%", "").replace("_", "")
-    if len(safe_nickname) < 1:
-        return FindEmailResponse(masked_emails=[], message="검색어를 입력해주세요")
-
-    users = db.query(User).filter(User.nickname.ilike(f"%{safe_nickname}%")).all()
-
-    if not users:
-        return FindEmailResponse(
-            masked_emails=[],
-            message="일치하는 계정을 찾을 수 없습니다"
-        )
-
-    def mask_email(email: str) -> str:
-        local, domain = email.split("@")
-        if len(local) <= 2:
-            masked = local[0] + "***"
-        else:
-            masked = local[:2] + "***"
-        return f"{masked}@{domain}"
-
-    masked = [mask_email(u.email) for u in users]
-    return FindEmailResponse(
-        masked_emails=masked,
-        message=f"{len(masked)}개의 계정을 찾았습니다"
-    )
+        response = RedirectResponse("/static/pending.html")
+    _set_auth_cookies(response, user)
+    return response
 
 
 # ── API 키 관리 ──
@@ -354,7 +197,7 @@ def _mask_key(key: str) -> str:
 
 
 @router.get("/api-keys")
-async def get_api_keys(user: User = Depends(get_current_user)):
+async def get_api_keys(user: User = Depends(get_approved_user)):
     """현재 사용자의 API 키 상태 조회 (마스킹)"""
     result = {"gemini": None, "typecast": None, "fal": None}
     if user.gemini_api_key_enc:
@@ -369,7 +212,7 @@ async def get_api_keys(user: User = Depends(get_current_user)):
 @router.put("/api-keys")
 async def update_api_keys(
     req: ApiKeysUpdateRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_approved_user),
     db: Session = Depends(get_db),
 ):
     """API 키 저장 (검증 후 암호화)"""

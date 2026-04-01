@@ -15,7 +15,7 @@ from core.r2_storage import (
     is_r2_enabled, r2_file_exists, stream_from_r2,
     generate_presigned_url, upload_file as r2_upload,
 )
-from api.deps import get_current_user, get_user_job
+from api.deps import get_approved_user, get_user_job
 from db.database import get_db
 from db.models import Job, User, UserBgm
 
@@ -42,7 +42,7 @@ async def get_image(
     job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
     idx: int = Path(..., ge=0, le=20),
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_approved_user),
 ):
     """생성된 이미지 파일 서빙"""
     get_user_job(db, job_id, _user)
@@ -63,7 +63,7 @@ async def get_image(
 async def get_video(
     job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_approved_user),
 ):
     """최종 영상 파일 서빙"""
     get_user_job(db, job_id, _user)
@@ -98,7 +98,7 @@ def _probe_audio(filepath: str) -> float:
 
 
 @bgm_router.get("/bgm", response_model=list)
-async def list_bgm(db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
+async def list_bgm(db: Session = Depends(get_db), _user: User = Depends(get_approved_user)):
     """BGM 파일 목록 반환 (R2 활성: DB 조회, 비활성: 로컬 스캔)"""
     if is_r2_enabled():
         # DB에서 사용자의 BGM 목록 조회
@@ -137,7 +137,7 @@ async def list_bgm(db: Session = Depends(get_db), _user: User = Depends(get_curr
 async def upload_bgm(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_approved_user),
 ):
     """BGM 업로드 → ffprobe 검증 → R2 저장 → DB 기록"""
     # 확장자 체크
@@ -202,7 +202,7 @@ async def upload_bgm(
 async def delete_bgm(
     bgm_id: str,
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_approved_user),
 ):
     """BGM 삭제 (본인 것만)"""
     bgm = db.query(UserBgm).filter(UserBgm.id == bgm_id).first()
@@ -228,7 +228,7 @@ async def delete_bgm(
 async def get_bgm_file(
     bgm_id_or_filename: str,
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_approved_user),
 ):
     """BGM 파일 서빙 (R2 활성: 스트리밍, 비활성: 로컬)"""
     if is_r2_enabled():

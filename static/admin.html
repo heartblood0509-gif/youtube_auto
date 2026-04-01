@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>관리 - Shorts Pick</title>
+    <link rel="stylesheet" href="/static/css/style.css?v=4">
+</head>
+<body class="has-navbar">
+    <script>if(localStorage.getItem('theme')==='dark'||!localStorage.getItem('theme'))document.body.classList.add('dark');</script>
+    <nav class="navbar">
+        <a href="/" class="navbar-logo">
+            <span class="navbar-logo-emoji">🎬</span>
+            <span class="navbar-logo-text">Shorts Pick</span>
+        </a>
+        <div id="navbar-right" class="navbar-right"></div>
+    </nav>
+
+    <div class="container" style="padding-top: 20px;">
+        <h2 class="page-title">관리자 대시보드</h2>
+
+        <div class="admin-tabs">
+            <button class="admin-tab active" onclick="switchTab('users')">사용자 관리</button>
+            <button class="admin-tab" onclick="switchTab('jobs')">작업 이력</button>
+        </div>
+
+        <div id="tab-users" class="admin-panel">
+            <h2 class="section-title">승인 대기 <span id="pending-count" class="count-badge"></span></h2>
+            <div id="pending-list"></div>
+
+            <h2 class="section-title" style="margin-top: 32px;">전체 사용자</h2>
+            <div id="all-users-list"></div>
+        </div>
+
+        <div id="tab-jobs" class="admin-panel" style="display:none;">
+            <div id="admin-job-list"></div>
+        </div>
+    </div>
+
+    <style>
+        .admin-tabs {
+            display: flex; gap: 0; margin-bottom: 24px;
+            border-bottom: 1px solid var(--border);
+        }
+        .admin-tab {
+            flex: 1; padding: 12px; background: none; border: none;
+            color: var(--text-dim); font-size: 15px; cursor: pointer;
+            border-bottom: 2px solid transparent; transition: color 0.2s, border-color 0.2s;
+        }
+        .admin-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+        .admin-tab:hover { color: var(--text); }
+        .section-title { font-size: 16px; color: var(--primary); margin-bottom: 12px; }
+        .count-badge {
+            font-size: 12px; background: rgba(255,71,87,0.15); color: var(--error);
+            padding: 2px 8px; border-radius: 10px; margin-left: 8px;
+        }
+        .count-badge:empty { display: none; }
+
+        .user-row {
+            display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: 8px; margin-bottom: 8px; flex-wrap: wrap;
+        }
+        .user-row .nickname { font-weight: 600; min-width: 80px; }
+        .user-row .email { color: var(--text-dim); font-size: 13px; flex: 1; }
+        .user-row .date { color: var(--text-dim); font-size: 12px; }
+        .role-badge {
+            font-size: 11px; padding: 2px 8px; border-radius: 4px;
+        }
+        .role-badge.admin { background: rgba(255,71,87,0.15); color: var(--error); }
+        .role-badge.user { background: rgba(136,136,136,0.15); color: var(--text-dim); }
+        .approved-badge {
+            font-size: 11px; padding: 2px 8px; border-radius: 4px;
+        }
+        .approved-badge.yes { background: rgba(46,213,115,0.15); color: var(--success); }
+        .approved-badge.no { background: rgba(255,71,87,0.15); color: var(--error); }
+
+        .btn-approve {
+            background: var(--success); color: #000; border: none; border-radius: 6px;
+            padding: 4px 12px; font-size: 12px; cursor: pointer; font-weight: 600;
+        }
+        .btn-reject {
+            background: var(--error); color: #fff; border: none; border-radius: 6px;
+            padding: 4px 12px; font-size: 12px; cursor: pointer; font-weight: 600;
+        }
+        .btn-approve:hover, .btn-reject:hover { opacity: 0.85; }
+
+        .empty-notice { color: var(--text-dim); text-align: center; padding: 20px; font-size: 14px; }
+
+        .job-owner-info { display: flex; align-items: center; gap: 8px; font-size: 12px; padding-top: 4px; flex-basis: 100%; }
+        .job-owner-badge { background: rgba(0,206,209,0.15); color: var(--primary); padding: 2px 8px; border-radius: 4px; font-weight: 600; }
+        .job-owner-email { color: var(--text-dim); }
+        .job-topic { color: var(--text-dim); font-style: italic; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    </style>
+
+    <script src="/static/js/auth.js"></script>
+    <script>
+    function escapeHtml(str) {
+        if (!str) return '';
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    authReady.then(user => {
+        if (user.role !== 'admin') {
+            window.location.href = '/';
+            return;
+        }
+        loadPendingUsers();
+        loadAllUsers();
+    });
+
+    function switchTab(tab) {
+        document.querySelectorAll('.admin-tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.admin-panel').forEach(p => p.style.display = 'none');
+        if (tab === 'users') {
+            document.querySelectorAll('.admin-tab')[0].classList.add('active');
+            document.getElementById('tab-users').style.display = '';
+        } else {
+            document.querySelectorAll('.admin-tab')[1].classList.add('active');
+            document.getElementById('tab-jobs').style.display = '';
+            loadAdminJobs();
+        }
+    }
+
+    async function loadPendingUsers() {
+        const resp = await authFetch('/api/admin/pending-users');
+        if (!resp.ok) return;
+        const users = await resp.json();
+        const el = document.getElementById('pending-list');
+        document.getElementById('pending-count').textContent = users.length > 0 ? `${users.length}명` : '';
+
+        if (users.length === 0) {
+            el.innerHTML = '<p class="empty-notice">승인 대기 중인 사용자가 없습니다</p>';
+            return;
+        }
+        el.innerHTML = users.map(u => `
+            <div class="user-row" id="pending-${escapeHtml(u.id)}">
+                <span class="nickname">${escapeHtml(u.nickname || '-')}</span>
+                <span class="email">${escapeHtml(u.email)}</span>
+                <span class="date">${u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : ''}</span>
+                <button class="btn-approve" onclick="approveUser('${escapeHtml(u.id)}')">승인</button>
+                <button class="btn-reject" onclick="rejectUser('${escapeHtml(u.id)}')">거절</button>
+            </div>
+        `).join('');
+    }
+
+    async function loadAllUsers() {
+        const resp = await authFetch('/api/admin/users');
+        if (!resp.ok) return;
+        const users = await resp.json();
+        const el = document.getElementById('all-users-list');
+        el.innerHTML = users.map(u => `
+            <div class="user-row">
+                <span class="nickname">${escapeHtml(u.nickname || '-')}</span>
+                <span class="email">${escapeHtml(u.email)}</span>
+                <span class="role-badge ${u.role}">${u.role}</span>
+                <span class="approved-badge ${u.approved ? 'yes' : 'no'}">${u.approved ? '승인' : '미승인'}</span>
+                <span class="date">${u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : ''}</span>
+            </div>
+        `).join('');
+    }
+
+    async function approveUser(userId) {
+        const resp = await authFetch(`/api/admin/users/${userId}/approve`, { method: 'POST' });
+        if (resp.ok) { loadPendingUsers(); loadAllUsers(); }
+    }
+
+    async function rejectUser(userId) {
+        if (!confirm('이 사용자를 거절(삭제)하시겠습니까?')) return;
+        const resp = await authFetch(`/api/admin/users/${userId}/reject`, { method: 'POST' });
+        if (resp.ok) { loadPendingUsers(); loadAllUsers(); }
+    }
+
+    async function loadAdminJobs() {
+        const resp = await authFetch('/api/admin/jobs');
+        if (!resp.ok) return;
+        const jobs = await resp.json();
+        const el = document.getElementById('admin-job-list');
+        if (jobs.length === 0) {
+            el.innerHTML = '<p class="empty-notice">작업 이력이 없습니다</p>';
+            return;
+        }
+        el.innerHTML = jobs.map(job => `
+            <div class="card job-card">
+                <div class="job-info">
+                    <span class="job-status status-${escapeHtml(job.status)}">${escapeHtml(statusLabel(job.status))}</span>
+                    <span class="job-id">${escapeHtml(job.job_id)}</span>
+                    <span class="job-date">${new Date(job.created_at).toLocaleString('ko-KR')}</span>
+                </div>
+                ${(job.owner_nickname || job.owner_email || job.topic) ? `
+                <div class="job-owner-info">
+                    ${job.owner_nickname ? `<span class="job-owner-badge">${escapeHtml(job.owner_nickname)}</span>` : ''}
+                    ${job.owner_email ? `<span class="job-owner-email">${escapeHtml(job.owner_email)}</span>` : ''}
+                    ${job.topic ? `<span class="job-topic">${escapeHtml(job.topic)}</span>` : ''}
+                </div>` : ''}
+                <p class="job-step">${escapeHtml(job.current_step || '')}</p>
+                ${job.video_url ? `<a href="${escapeHtml(job.video_url)}" class="btn-small btn-primary" download>다운로드</a>` : ''}
+            </div>
+        `).join('');
+    }
+
+    function statusLabel(status) {
+        const labels = {
+            pending: '대기', generating_images: '이미지 생성', preview_ready: '미리보기',
+            regenerating_image: '이미지 재생성', awaiting_confirmation: '확인 대기',
+            generating_clips: '클립 생성', clips_ready: '클립 준비',
+            generating_tts: 'TTS 생성', assembling_video: '영상 조립',
+            completed: '완료', failed: '실패',
+        };
+        return labels[status] || status;
+    }
+    </script>
+</body>
+</html>

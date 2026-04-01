@@ -3,16 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>작업 이력 - AI 쇼츠</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <title>작업 이력 - Shorts Pick</title>
+    <link rel="stylesheet" href="/static/css/style.css?v=4">
 </head>
-<body>
-    <div class="container">
-        <header>
-            <h1>작업 이력</h1>
-            <div id="user-info" class="user-info hidden"></div>
-            <a href="/" class="btn-secondary btn-small">새 영상 만들기</a>
-        </header>
+<body class="has-navbar">
+    <script>if(localStorage.getItem('theme')==='dark'||!localStorage.getItem('theme'))document.body.classList.add('dark');</script>
+    <nav class="navbar">
+        <a href="/" class="navbar-logo">
+            <span class="navbar-logo-emoji">🎬</span>
+            <span class="navbar-logo-text">Shorts Pick</span>
+        </a>
+        <div id="navbar-right" class="navbar-right"></div>
+    </nav>
+
+    <div class="container" style="padding-top: 20px;">
+        <h2 class="page-title">작업 이력</h2>
 
         <p class="history-notice">생성된 파일은 30일간 보관 후 자동 삭제됩니다</p>
 
@@ -36,33 +41,6 @@
         }
         .job-expire-badge.expired {
             background: rgba(255,71,87,0.1); color: var(--error);
-        }
-        .job-owner-info {
-            flex-basis: 100%;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 12px;
-            padding-top: 4px;
-        }
-        .job-owner-badge {
-            background: rgba(0, 206, 209, 0.15);
-            color: var(--primary);
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-weight: 600;
-        }
-        .job-owner-email {
-            color: var(--text-dim);
-        }
-        .job-topic {
-            color: var(--text-dim);
-            font-style: italic;
-            margin-left: auto;
-            max-width: 300px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
         }
     </style>
 
@@ -93,13 +71,6 @@
                     <span class="job-date">${new Date(job.created_at).toLocaleString('ko-KR')}</span>
                     ${expireBadge(job)}
                 </div>
-                ${(currentUser && currentUser.role === 'admin' && (job.owner_nickname || job.owner_email || job.topic)) ? `
-                <div class="job-owner-info">
-                    ${job.owner_nickname ? `<span class="job-owner-badge">${escapeHtml(job.owner_nickname)}</span>` : ''}
-                    ${job.owner_email ? `<span class="job-owner-email">${escapeHtml(job.owner_email)}</span>` : ''}
-                    ${job.topic ? `<span class="job-topic">${escapeHtml(job.topic)}</span>` : ''}
-                </div>
-                ` : ''}
                 <p class="job-step">${escapeHtml(job.current_step || '')}</p>
                 ${jobActions(job)}
             </div>

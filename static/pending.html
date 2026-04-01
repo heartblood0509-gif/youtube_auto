@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>승인 대기 - Shorts Pick</title>
+    <link rel="stylesheet" href="/static/css/style.css?v=4">
+    <link rel="stylesheet" href="/static/css/login.css?v=6">
+</head>
+<body>
+    <script>if(localStorage.getItem('theme')==='dark'||!localStorage.getItem('theme'))document.body.classList.add('dark');</script>
+    <div class="login-wrapper">
+        <div class="login-container">
+
+            <div class="auth-panel login-card">
+                <div class="login-logo">
+                    <span class="login-logo-emoji">🎬</span>
+                    <span class="login-logo-text">Shorts Pick</span>
+                </div>
+
+                <div style="font-size: 48px; margin-bottom: 16px;">&#128336;</div>
+                <h3 class="login-logo-text" style="margin-bottom: 12px; font-size: 18px;">승인 대기 중</h3>
+                <p class="login-subtitle" style="margin-bottom: 4px;">
+                    관리자가 승인할 때까지 기다려주세요.
+                </p>
+                <p class="login-subtitle" style="margin-bottom: 16px; font-size: 13px;">
+                    승인 후 자동으로 이동됩니다.
+                </p>
+                <p id="user-email" class="login-logo-text" style="font-size: 14px; margin-bottom: 24px;"></p>
+                <button class="btn-secondary btn-full" onclick="doLogout()">로그아웃</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    async function doLogout() {
+        await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+        window.location.href = '/static/login.html';
+    }
+
+    async function checkApproval() {
+        try {
+            const resp = await fetch('/api/auth/me', { credentials: 'same-origin' });
+            if (resp.ok) {
+                const data = await resp.json();
+                if (data.user.approved) {
+                    window.location.href = '/';
+                    return;
+                }
+                document.getElementById('user-email').textContent = data.user.email;
+            } else {
+                window.location.href = '/static/login.html';
+            }
+        } catch {
+            window.location.href = '/static/login.html';
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        checkApproval();
+        setInterval(checkApproval, 10000);
+    });
+    </script>
+</body>
+</html>

@@ -44,10 +44,6 @@ const STEPS = [
     { id: 'step-input',     label: '주제',     summaryFn: () => document.getElementById('topic').value || '' },
     { id: 'step-titles',    label: '제목',     summaryFn: () => selectedTitle || '' },
     { id: 'step-narration', label: '나레이션', summaryFn: () => selectedTitle || '' },
-    { id: 'step-style',     label: '스타일',   summaryFn: () => {
-        const card = document.querySelector('.style-card.selected .style-card-name');
-        return card ? card.textContent : '';
-    }},
     { id: 'step-tts',       label: '음성',     summaryFn: () => {
         const sel = document.getElementById('tts-voice');
         return sel && sel.selectedOptions[0] ? sel.selectedOptions[0].text : '';
@@ -153,6 +149,7 @@ async function generateTitles() {
         return;
     }
 
+    advanceToStep(1);
     showLoading('제목 생성 중...');
 
     try {
@@ -173,12 +170,12 @@ async function generateTitles() {
     } catch (e) {
         showFriendlyError(e.message);
         hideLoading();
+        goToStep(0);
     }
 }
 
 function displayTitles(data) {
     hideLoading();
-    goToStep(1);
     document.getElementById('btn-next-title').disabled = true;
     document.getElementById('title-split-editor').classList.add('hidden');
 
@@ -218,6 +215,7 @@ function confirmTitle() {
 async function generateNarration() {
     if (!selectedTitle) return;
 
+    advanceToStep(2);
     showLoading('나레이션 생성 중...');
 
     try {
@@ -250,7 +248,6 @@ async function generateNarration() {
 
 function displayNarration(data) {
     hideLoading();
-    goToStep(2);
 
     document.getElementById('selected-title-display').textContent = selectedTitle;
 
@@ -290,7 +287,7 @@ function regenerateNarration() {
 // ──────────────────────────────────
 // Step 4: 나레이션 확정 → 이미지 스타일 표시
 // ──────────────────────────────────
-function approveNarration() {
+async function approveNarration() {
     // 편집된 나레이션 텍스트 수집 & 검증
     const textInputs = document.querySelectorAll('#narration-lines .line-text');
     const narrationLines = Array.from(textInputs).map(input => input.value.trim());
@@ -300,84 +297,40 @@ function approveNarration() {
         return;
     }
 
-    // 나레이션 텍스트 저장 (이미지 프롬프트 생성 시 사용)
     window._approvedNarrationLines = narrationLines;
 
-    goToStep(3);
-    document.getElementById('image-prompt-result').classList.add('hidden');
-}
-
-async function generateImagePrompts() {
-    const narrationLines = window._approvedNarrationLines;
-    if (!narrationLines) {
-        alert('나레이션을 먼저 확정해주세요');
-        return;
-    }
-
+    advanceToStep(3); // 음성 단계로 먼저 이동
     showLoading('이미지 프롬프트 생성 중...');
 
     try {
-        const style = document.getElementById('style').value;
         const category = document.getElementById('category').value;
-        const payload = { narration_lines: narrationLines, style, category };
-
         const resp = await authFetch('/api/generate/image-prompts', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({
+                narration_lines: narrationLines,
+                style: 'realistic',
+                category,
+            }),
         });
-
         if (!resp.ok) {
             const err = await resp.json();
             throw new Error(err.detail || '이미지 프롬프트 생성 실패');
         }
-
         scriptData = await resp.json();
-        displayImagePrompts(scriptData);
     } catch (e) {
-        showFriendlyError(e.message);
         hideLoading();
-    }
-}
-
-function displayImagePrompts(data) {
-    hideLoading();
-    goToStep(3);
-
-    document.getElementById('title-text').textContent = selectedTitle;
-    document.getElementById('image-prompt-result').classList.remove('hidden');
-
-    const container = document.getElementById('script-lines');
-    container.innerHTML = data.lines.map((line, i) => `
-        <div class="script-line">
-            <div class="line-header">
-                <span class="line-num">${i + 1}</span>
-                <span class="line-motion">${motionLabel(line.motion)}</span>
-            </div>
-            <input type="text" class="line-text" value="${escapeHtml(line.text)}" data-index="${i}">
-            <p class="line-prompt">${escapeHtml(line.image_prompt)}</p>
-        </div>
-    `).join('');
-}
-
-// ──────────────────────────────────
-// Step 5: 음성 설정
-// ──────────────────────────────────
-function confirmImagePrompts() {
-    if (!scriptData) {
-        alert('이미지 프롬프트를 먼저 생성해주세요');
+        showFriendlyError(e.message);
+        goToStep(2); // 실패 시 나레이션으로 복귀
         return;
     }
-
-    // 수정된 텍스트 반영
-    const textInputs = document.querySelectorAll('#script-lines .line-text');
-    textInputs.forEach((input, i) => {
-        scriptData.lines[i].text = input.value;
-    });
-
-    goToStep(4);
+    hideLoading();
     updateVoiceOptions();
 }
+
+// ──────────────────────────────────
+// Step 4: 음성 설정
+// ──────────────────────────────────
 
 // ── TTS 음성 옵션 ──
 function updateVoiceOptions() {
@@ -483,10 +436,10 @@ document.getElementById('voice-preview-btn').addEventListener('click', async fun
 });
 
 // ──────────────────────────────────
-// Step 6: BGM 설정
+// Step 5: BGM 설정
 // ──────────────────────────────────
 function confirmTtsSettings() {
-    goToStep(5);
+    advanceToStep(4);
     if (bgmList.length === 0) loadBgmList();
 }
 
@@ -508,10 +461,10 @@ document.getElementById('bgm-start-sec').addEventListener('change', function() {
 });
 
 // ──────────────────────────────────
-// Step 7: 최종 확인
+// Step 6: 최종 확인
 // ──────────────────────────────────
 function confirmBgmSettings() {
-    goToStep(6);
+    advanceToStep(5);
 
     // 설정 요약 표시
     const engine = document.getElementById('tts-engine').value;
@@ -545,7 +498,7 @@ async function createJob() {
 
     const payload = {
         topic: document.getElementById('topic').value,
-        style: document.getElementById('style').value,
+        style: 'realistic',
         video_mode: "kenburns",
         tts_engine: document.getElementById('tts-engine').value,
         tts_speed: parseFloat(document.getElementById('tts-speed').value),
@@ -585,24 +538,21 @@ async function createJob() {
 // ──────────────────────────────────
 // 스텝 관리 (타임라인 + 접기/펼치기)
 // ──────────────────────────────────
+let maxReachedStep = 0;
+
 function goToStep(stepIndex) {
     currentStepIndex = stepIndex;
-    updateTimeline(stepIndex);
 
     STEPS.forEach((step, i) => {
         const section = document.getElementById(step.id);
-        if (i < stepIndex) {
-            section.classList.remove('hidden');
-            section.classList.add('collapsed');
-            const summaryEl = document.getElementById('summary-' + i);
-            if (summaryEl) summaryEl.textContent = step.summaryFn();
-        } else if (i === stepIndex) {
+        if (i === stepIndex) {
             section.classList.remove('hidden', 'collapsed');
         } else {
             section.classList.add('hidden');
-            section.classList.remove('collapsed');
         }
     });
+
+    updateTimeline();
 
     setTimeout(() => {
         const current = document.getElementById(STEPS[stepIndex].id);
@@ -610,61 +560,59 @@ function goToStep(stepIndex) {
     }, 100);
 }
 
-function updateTimeline(activeIndex) {
+function advanceToStep(stepIndex) {
+    maxReachedStep = stepIndex;
+    goToStep(stepIndex);
+}
+
+function clickTimelineStep(stepIndex) {
+    if (stepIndex > maxReachedStep) return;
+    goToStep(stepIndex);
+}
+
+function updateTimeline() {
     const items = document.querySelectorAll('.timeline-item');
     items.forEach((item, i) => {
         item.classList.remove('completed', 'active');
-        if (i < activeIndex) item.classList.add('completed');
-        else if (i === activeIndex) item.classList.add('active');
+        if (i < maxReachedStep) item.classList.add('completed');
+        if (i === currentStepIndex) item.classList.add('active');
     });
 
     const track = document.querySelector('.timeline-track');
-    const progress = activeIndex === 0 ? 0 : (activeIndex / (STEPS.length - 1)) * 100;
+    const progress = maxReachedStep === 0 ? 0 : (maxReachedStep / (STEPS.length - 1)) * 100;
     track.style.setProperty('--timeline-progress', progress + '%');
-}
-
-function toggleStepExpand(stepIndex) {
-    if (stepIndex >= currentStepIndex) return;
-    const section = document.getElementById(STEPS[stepIndex].id);
-
-    if (section.classList.contains('collapsed')) {
-        section.classList.remove('collapsed');
-    } else {
-        section.classList.add('collapsed');
-        const summaryEl = document.getElementById('summary-' + stepIndex);
-        if (summaryEl) summaryEl.textContent = STEPS[stepIndex].summaryFn();
-    }
 }
 
 // ──────────────────────────────────
 // 스타일 카드 선택
 // ──────────────────────────────────
-function selectStyle(card) {
-    document.querySelectorAll('#step-style .style-card').forEach(c => c.classList.remove('selected'));
-    card.classList.add('selected');
-    document.getElementById('style').value = card.dataset.value;
-}
+
 
 // ──────────────────────────────────
 // 유틸리티
 // ──────────────────────────────────
 function hideAllSteps() {
-    ['step-input', 'step-titles', 'step-narration', 'step-style', 'step-tts', 'step-bgm', 'step-confirm', 'step-loading'].forEach(id => {
-        const el = document.getElementById(id);
-        el.classList.add('hidden');
-        el.classList.remove('collapsed');
+    STEPS.forEach(step => {
+        const el = document.getElementById(step.id);
+        if (el) { el.classList.add('hidden'); el.classList.remove('collapsed'); }
     });
 }
 
 function showLoading(text) {
-    document.getElementById('step-loading').classList.remove('hidden');
-    document.getElementById('loading-text').textContent = text;
-    document.getElementById('btn-generate').disabled = true;
+    const stepEl = document.getElementById(STEPS[currentStepIndex].id);
+    let overlay = stepEl.querySelector('.step-loading-overlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.className = 'step-loading-overlay';
+        overlay.innerHTML = '<div class="spinner"></div><p class="loading-text"></p>';
+        stepEl.appendChild(overlay);
+    }
+    overlay.querySelector('.loading-text').textContent = text;
+    overlay.classList.remove('hidden');
 }
 
 function hideLoading() {
-    document.getElementById('step-loading').classList.add('hidden');
-    document.getElementById('btn-generate').disabled = false;
+    document.querySelectorAll('.step-loading-overlay').forEach(el => el.classList.add('hidden'));
 }
 
 function motionLabel(motion) {

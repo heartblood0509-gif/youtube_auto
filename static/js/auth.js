@@ -1,5 +1,13 @@
 /* 인증 유틸리티 - 모든 페이지에서 공유 */
 
+/* ── 테마 (다크/라이트) ── */
+function toggleTheme() {
+    const isDark = document.body.classList.toggle('dark');
+    localStorage.setItem('theme', isDark ? 'dark' : 'light');
+    const btn = document.getElementById('theme-toggle-btn');
+    if (btn) btn.innerHTML = isDark ? '&#127769;' : '&#9728;&#65039;';
+}
+
 let currentUser = null;
 let _authReady;
 const authReady = new Promise(resolve => { _authReady = resolve; });
@@ -26,10 +34,22 @@ async function authFetch(url, options = {}) {
             resp = await fetch(url, options);
         } else {
             window.location.href = '/static/login.html';
-            // 리다이렉트 중 호출자 에러 방지: 빈 응답 객체 반환
             return new Response('{}', { status: 401, headers: { 'Content-Type': 'application/json' } });
         }
     }
+
+    // 미승인 사용자가 서비스 API 호출 시 pending 페이지로
+    if (resp.status === 403) {
+        try {
+            const clone = resp.clone();
+            const data = await clone.json();
+            if (data.detail && data.detail.includes('승인 대기')) {
+                window.location.href = '/static/pending.html';
+                return new Response('{}', { status: 403, headers: { 'Content-Type': 'application/json' } });
+            }
+        } catch { /* not JSON or other 403, pass through */ }
+    }
+
     return resp;
 }
 
@@ -42,6 +62,12 @@ async function checkAuth() {
         if (resp.ok) {
             const data = await resp.json();
             currentUser = data.user;
+
+            if (!currentUser.approved) {
+                window.location.href = '/static/pending.html';
+                return false;
+            }
+
             _authReady(currentUser);
             updateUserUI(data.user);
             return true;
@@ -55,6 +81,12 @@ async function checkAuth() {
         if (refreshResp.ok) {
             const data = await refreshResp.json();
             currentUser = data.user;
+
+            if (!currentUser.approved) {
+                window.location.href = '/static/pending.html';
+                return false;
+            }
+
             _authReady(currentUser);
             updateUserUI(data.user);
             return true;
@@ -69,28 +101,75 @@ async function checkAuth() {
 }
 
 /**
- * 사용자 정보 UI 업데이트 (로그아웃 버튼 등)
+ * 네비바 우측 메뉴 렌더링
  */
 function updateUserUI(user) {
-    const el = document.getElementById('user-info');
-    if (el && user) {
-        el.textContent = '';
-        const nameSpan = document.createElement('span');
-        nameSpan.className = 'user-name';
-        nameSpan.textContent = user.nickname || user.email;
-        const settingsBtn = document.createElement('button');
-        settingsBtn.className = 'btn-logout';
-        settingsBtn.textContent = '설정';
-        settingsBtn.onclick = () => { window.location.href = '/static/settings.html'; };
-        const logoutBtn = document.createElement('button');
-        logoutBtn.className = 'btn-logout';
-        logoutBtn.textContent = '로그아웃';
-        logoutBtn.onclick = logout;
-        el.appendChild(nameSpan);
-        el.appendChild(settingsBtn);
-        el.appendChild(logoutBtn);
-        el.classList.remove('hidden');
+    const nav = document.getElementById('navbar-right');
+    if (!nav || !user) return;
+    nav.innerHTML = '';
+
+    // Home
+    const homeLink = document.createElement('a');
+    homeLink.href = '/';
+    homeLink.className = 'navbar-link';
+    homeLink.textContent = 'Home';
+    nav.appendChild(homeLink);
+
+    // 새소식
+    const newsLink = document.createElement('a');
+    newsLink.href = '/static/changelog.html';
+    newsLink.className = 'navbar-link';
+    newsLink.textContent = '새소식';
+    nav.appendChild(newsLink);
+
+    // 작업이력
+    const historyLink = document.createElement('a');
+    historyLink.href = '/static/history.html';
+    historyLink.className = 'navbar-link';
+    historyLink.textContent = '작업이력';
+    nav.appendChild(historyLink);
+
+    // API 키 입력 (미설정 시)
+    if (!user.has_gemini_key) {
+        const ctaBtn = document.createElement('a');
+        ctaBtn.href = '/static/settings.html';
+        ctaBtn.className = 'navbar-cta';
+        ctaBtn.textContent = 'API 키를 입력해주세요';
+        nav.appendChild(ctaBtn);
     }
+
+    // 다크/라이트 모드 전환
+    const themeBtn = document.createElement('button');
+    themeBtn.className = 'navbar-icon-btn';
+    themeBtn.id = 'theme-toggle-btn';
+    themeBtn.innerHTML = document.body.classList.contains('dark') ? '&#127769;' : '&#9728;&#65039;';
+    themeBtn.title = '테마 전환';
+    themeBtn.onclick = toggleTheme;
+    nav.appendChild(themeBtn);
+
+    // 이메일
+    const emailSpan = document.createElement('span');
+    emailSpan.className = 'navbar-email';
+    emailSpan.textContent = user.email;
+    nav.appendChild(emailSpan);
+
+    // 관리 (admin만)
+    if (user.role === 'admin') {
+        const adminLink = document.createElement('a');
+        adminLink.href = '/static/admin.html';
+        adminLink.className = 'navbar-link';
+        adminLink.style.color = 'var(--primary)';
+        adminLink.textContent = '관리';
+        nav.appendChild(adminLink);
+    }
+
+    // 로그아웃
+    const logoutBtn = document.createElement('button');
+    logoutBtn.className = 'navbar-icon-btn';
+    logoutBtn.title = '로그아웃';
+    logoutBtn.innerHTML = '&#10132;';
+    logoutBtn.onclick = logout;
+    nav.appendChild(logoutBtn);
 }
 
 /**
@@ -101,10 +180,10 @@ async function logout() {
     window.location.href = '/static/login.html';
 }
 
-// 로그인/리셋 페이지가 아니면 인증 확인
+// 로그인/리셋/승인대기 페이지가 아니면 인증 확인
 document.addEventListener('DOMContentLoaded', () => {
     const path = window.location.pathname;
-    if (!path.includes('login') && !path.includes('reset-password')) {
+    if (!path.includes('login') && !path.includes('reset-password') && !path.includes('pending')) {
         checkAuth();
     }
 });

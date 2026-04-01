@@ -49,7 +49,17 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     return user
 
 
-def get_current_admin(user: User = Depends(get_current_user)) -> User:
+def get_approved_user(user: User = Depends(get_current_user)) -> User:
+    """승인된 사용자만 접근 가능. 미승인 시 403."""
+    if not user.approved:
+        raise HTTPException(
+            status_code=403,
+            detail="승인 대기 중입니다. 관리자 승인 후 이용 가능합니다."
+        )
+    return user
+
+
+def get_current_admin(user: User = Depends(get_approved_user)) -> User:
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="관리자 권한이 필요합니다")
     return user

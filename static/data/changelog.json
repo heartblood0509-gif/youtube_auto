@@ -1,0 +1,40 @@
+[
+  {
+    "version": "v1",
+    "date": "2026-04-01",
+    "title": "Shorts Pick 첫 출시",
+    "sections": [
+      {
+        "emoji": "🎬",
+        "heading": "핵심 기능",
+        "items": [
+          "AI 기반 쇼츠 영상 자동 생성",
+          "Google 로그인 + 관리자 승인 방식",
+          "이미지 생성 → 미리보기 → 영상 제작 파이프라인",
+          "Ken Burns / Hailuo / Kling / Veo 영상 모드 지원",
+          "Edge TTS / Typecast 음성 지원"
+        ]
+      },
+      {
+        "emoji": "🎨",
+        "heading": "UI/UX",
+        "items": [
+          "다크/라이트 모드 전환",
+          "SaaS 스타일 네비바 헤더",
+          "관리자 대시보드 (사용자 관리 + 작업 이력)",
+          "새소식 (업데이트 내역) 페이지"
+        ]
+      },
+      {
+        "emoji": "⚙️",
+        "heading": "인프라",
+        "items": [
+          "Railway 배포 지원",
+          "Cloudflare R2 파일 저장",
+          "30일 자동 파일 만료",
+          "사용자별 API 키 관리 (Gemini, Typecast, FAL)"
+        ]
+      }
+    ]
+  }
+]

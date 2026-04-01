@@ -60,6 +60,7 @@ _MIGRATIONS = {
         "gemini_api_key_enc": "VARCHAR",
         "typecast_api_key_enc": "VARCHAR",
         "fal_key_enc": "VARCHAR",
+        "approved": "BOOLEAN DEFAULT 0",
     },
 }
 
@@ -90,6 +91,10 @@ def _run_migrations():
                     conn.execute(text(
                         f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
                     ))
+
+                # 기존 사용자 자동 승인 (approved 컬럼 최초 추가 시 1회)
+                if table_name == "users" and col_name == "approved":
+                    conn.execute(text("UPDATE users SET approved = 1"))
 
         conn.commit()
 

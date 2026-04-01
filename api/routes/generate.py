@@ -7,7 +7,7 @@ from api.models import (
     NarrationRequest, NarrationResponse,
     ImagePromptRequest, ImagePromptResponse,
 )
-from api.deps import get_current_user, resolve_user_api_keys
+from api.deps import get_approved_user, resolve_user_api_keys
 from db.database import get_db
 from db.models import User
 import traceback
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/api/generate", tags=["generate"])
 
 
 @router.post("/titles", response_model=TitleResponse)
-async def generate_titles_endpoint(request: TitleRequest, db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
+async def generate_titles_endpoint(request: TitleRequest, db: Session = Depends(get_db), _user: User = Depends(get_approved_user)):
     """Step 2: 제목 3~4개 생성"""
     from core.gemini_client import generate_titles as gen
     keys = resolve_user_api_keys(db, _user.id)
@@ -39,7 +39,7 @@ async def generate_titles_endpoint(request: TitleRequest, db: Session = Depends(
 
 
 @router.post("/narration", response_model=NarrationResponse)
-async def generate_narration_endpoint(request: NarrationRequest, db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
+async def generate_narration_endpoint(request: NarrationRequest, db: Session = Depends(get_db), _user: User = Depends(get_approved_user)):
     """Step 3: 선택된 제목 기반 나레이션 생성"""
     from core.gemini_client import generate_narration as gen
     keys = resolve_user_api_keys(db, _user.id)
@@ -66,7 +66,7 @@ async def generate_narration_endpoint(request: NarrationRequest, db: Session = D
 
 
 @router.post("/image-prompts", response_model=ImagePromptResponse)
-async def generate_image_prompts_endpoint(request: ImagePromptRequest, db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
+async def generate_image_prompts_endpoint(request: ImagePromptRequest, db: Session = Depends(get_db), _user: User = Depends(get_approved_user)):
     """Step 4: 확정된 나레이션 기반 이미지 프롬프트 + 모션 생성"""
     from core.gemini_client import generate_image_prompts as gen
     keys = resolve_user_api_keys(db, _user.id)

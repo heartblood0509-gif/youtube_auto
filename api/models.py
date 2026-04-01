@@ -162,13 +162,6 @@ class ClipPreviewResponse(BaseModel):
 
 # ── 인증 ──
 
-class RegisterRequest(BaseModel):
-    email: str = Field(..., pattern=r'^[\w\.\+\-]+@[\w\.\-]+\.\w+$')
-    password: str = Field(..., min_length=8, max_length=100)
-    nickname: str = Field(..., min_length=2, max_length=30)
-    invite_code: Optional[str] = None
-
-
 class LoginRequest(BaseModel):
     email: str
     password: str
@@ -180,27 +173,10 @@ class UserResponse(BaseModel):
     nickname: Optional[str]
     role: str
     provider: str
+    approved: bool = False
     has_gemini_key: bool = False
     has_typecast_key: bool = False
     has_fal_key: bool = False
-
-
-class PasswordResetRequest(BaseModel):
-    email: str
-
-
-class PasswordResetConfirm(BaseModel):
-    token: str
-    new_password: str = Field(..., min_length=8, max_length=100)
-
-
-class FindEmailRequest(BaseModel):
-    nickname: str = Field(..., min_length=1, max_length=30)
-
-
-class FindEmailResponse(BaseModel):
-    masked_emails: list[str]
-    message: str
 
 
 # ── API 키 설정 ──

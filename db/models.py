@@ -1,6 +1,6 @@
 """SQLAlchemy ORM 모델"""
 
-from sqlalchemy import Column, String, Float, Text, DateTime, Index
+from sqlalchemy import Column, String, Float, Text, DateTime, Index, Boolean
 from sqlalchemy.orm import declarative_base
 import uuid
 import datetime
@@ -18,6 +18,7 @@ class User(Base):
     role = Column(String, default="user")
     provider = Column(String, default="email")
     provider_id = Column(String, nullable=True)
+    approved = Column(Boolean, default=False)
     reset_token = Column(String, nullable=True)
     reset_token_expires = Column(DateTime, nullable=True)
     gemini_api_key_enc = Column(String, nullable=True)

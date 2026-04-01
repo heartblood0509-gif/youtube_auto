@@ -36,6 +36,7 @@ def main():
                 print(f"이미 관리자 계정입니다: {email}")
                 return
             existing.role = "admin"
+            existing.approved = True
             if not existing.hashed_password:
                 existing.hashed_password = hash_password(password)
             db.commit()
@@ -48,6 +49,7 @@ def main():
                 hashed_password=hash_password(password),
                 role="admin",
                 provider="email",
+                approved=True,
             )
             db.add(user)
             db.commit()

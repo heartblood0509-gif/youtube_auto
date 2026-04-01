@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from typing import Optional
 from sqlalchemy.orm import Session
 from api.models import PreviewResponse, ClipPreviewResponse, ScriptLine
-from api.deps import get_current_user, get_user_job
+from api.deps import get_approved_user, get_user_job
 from db.database import get_db
 from db.models import Job, User
 from config import settings
@@ -22,7 +22,7 @@ router = APIRouter(prefix="/api/jobs", tags=["preview"])
 async def get_preview(
     job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_approved_user),
 ):
     """생성된 이미지 + 대본 미리보기"""
     job = get_user_job(db, job_id, _user)
@@ -41,7 +41,7 @@ async def confirm_and_render(
     job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
     background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_approved_user),
 ):
     """미리보기 확인 → AI 영상이면 클립 생성, Ken Burns면 바로 영상 조립"""
     # Request body에서 video_mode 직접 읽기
@@ -87,7 +87,7 @@ async def regenerate_image(
     body: RegenerateRequest = RegenerateRequest(),
     background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_approved_user),
 ):
     """특정 이미지 재생성 (한글 요청어 → 영어 프롬프트 변환)"""
     job = get_user_job(db, job_id, _user)
@@ -109,7 +109,7 @@ async def upload_image(
     line_index: int = 0,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_approved_user),
 ):
     """사용자 이미지 업로드 — AI 이미지 대체"""
     job = get_user_job(db, job_id, _user)
@@ -188,7 +188,7 @@ async def _regenerate_single_image(job_id: str, line_index: int, korean_request:
 async def get_clip_preview(
     job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_approved_user),
 ):
     """AI 클립 미리보기 데이터"""
     job = get_user_job(db, job_id, _user)
@@ -207,7 +207,7 @@ async def get_clip_file(
     job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
     index: int = 0,
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_approved_user),
 ):
     """개별 클립 파일 서빙"""
     from fastapi.responses import StreamingResponse
@@ -233,7 +233,7 @@ async def regenerate_clip(
     line_index: int = 0,
     background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_approved_user),
 ):
     """특정 AI 클립 재생성"""
     job = get_user_job(db, job_id, _user)
@@ -251,7 +251,7 @@ async def confirm_clips_and_render(
     job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
     background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_approved_user),
 ):
     """AI 클립 확인 → TTS + 영상 조립 시작"""
     job = get_user_job(db, job_id, _user)
@@ -272,7 +272,7 @@ async def upload_clip(
     line_index: int = 0,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_approved_user),
 ):
     """사용자 영상 업로드 — AI 클립 대체"""
     job = get_user_job(db, job_id, _user)
