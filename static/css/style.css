@@ -231,6 +231,12 @@ header h1 {
 .form-group {
     margin-bottom: 16px;
 }
+.field-help {
+    color: var(--text-dim);
+    font-size: 12px;
+    line-height: 1.6;
+    margin: 4px 0 8px;
+}
 
 .form-group label {
     display: block;
@@ -1053,6 +1059,37 @@ input[type="range"] {
     color: var(--primary);
 }
 
+/* BGM 재생바 */
+.bgm-player {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    margin-top: 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+}
+.bgm-player-btn {
+    width: 28px; height: 28px;
+    padding: 0; font-size: 14px;
+    border-radius: 50%; flex-shrink: 0;
+    background: transparent; color: var(--text);
+    border: 1px solid var(--border); cursor: pointer;
+    transition: border-color 0.2s;
+}
+.bgm-player-btn:hover { border-color: var(--primary); }
+.bgm-player-bar {
+    flex: 1; height: 6px;
+    accent-color: var(--primary);
+    cursor: pointer;
+}
+.bgm-player-time, .bgm-player-duration {
+    font-size: 11px; color: var(--text-dim);
+    min-width: 32px; text-align: center;
+    font-family: monospace;
+}
+
 .bgm-upload-area {
     display: flex;
     align-items: center;
@@ -1175,10 +1212,10 @@ input[type="range"] {
 }
 
 /* 완료 상태 */
-.timeline-item.completed {
+.timeline-item {
     cursor: pointer;
 }
-.timeline-item.completed:hover .timeline-dot {
+.timeline-item:hover .timeline-dot {
     box-shadow: 0 0 0 3px rgba(0, 206, 209, 0.25);
 }
 .timeline-item.completed .timeline-dot {
@@ -1264,6 +1301,14 @@ input[type="range"] {
 
 /* 접힌 상태 */
 .step-section { position: relative; overflow: hidden; }
+
+.step-guide-msg {
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 16px;
+    line-height: 1.6;
+    padding: 40px 20px;
+}
 
 .step-loading-overlay {
     position: absolute;

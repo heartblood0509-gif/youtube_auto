@@ -71,6 +71,13 @@ function toggleCategoryFields() {
     const category = document.getElementById('category').value;
     const cosmeticsFields = document.getElementById('cosmetics-fields');
     cosmeticsFields.style.display = category === 'cosmetics' ? 'block' : 'none';
+
+    const topicHelp = document.getElementById('topic-help');
+    if (topicHelp) {
+        topicHelp.innerHTML = category === 'cosmetics'
+            ? '내 화장품이 해결하는 피부 고민을 적어주세요.<br>예: 홍조 피부 진정 방법 / 건조 피부 보습 루틴 / 모공 축소 관리법'
+            : '어떤 내용의 영상을 만들지 한 줄로 적어주세요.<br>예: 여름철 자외선 차단 꿀팁 / 초보 운동 루틴 / 다이어트 식단 추천';
+    }
 }
 
 function autoSplitTitle(text) {
@@ -439,7 +446,7 @@ document.getElementById('voice-preview-btn').addEventListener('click', async fun
 // Step 5: BGM 설정
 // ──────────────────────────────────
 function confirmTtsSettings() {
-    advanceToStep(4);
+    goToStep(4);
     if (bgmList.length === 0) loadBgmList();
 }
 
@@ -464,22 +471,29 @@ document.getElementById('bgm-start-sec').addEventListener('change', function() {
 // Step 6: 최종 확인
 // ──────────────────────────────────
 function confirmBgmSettings() {
-    advanceToStep(5);
+    goToStep(5);
+}
 
-    // 설정 요약 표시
+function buildConfirmSummary() {
+    const summaryEl = document.getElementById('confirm-summary');
+    const createBtn = document.querySelector('#step-confirm .btn-primary');
+    if (!scriptData) {
+        summaryEl.innerHTML = '<p class="text-dim" style="text-align:center; padding:40px 20px; font-size:16px; line-height:1.6;">아직 영상 생성 준비가 완료되지 않았습니다.<br>주제 → 제목 → 나레이션 단계를 먼저 진행해주세요.</p>';
+        if (createBtn) createBtn.disabled = true;
+        return;
+    }
+    if (createBtn) createBtn.disabled = false;
+
     const engine = document.getElementById('tts-engine').value;
     const voiceLabel = document.getElementById('tts-voice').selectedOptions[0]?.text || '';
     const emotion = document.getElementById('tts-emotion').value;
     const speed = document.getElementById('tts-speed').value;
-    const styleCard = document.querySelector('.style-card.selected .style-card-name');
-    const style = styleCard ? styleCard.textContent : '';
     const bgm = selectedBgm ? selectedBgm.replace(/\.(mp3|wav|ogg)$/i, '') : '없음';
     const bgmVol = document.getElementById('bgm-volume').value;
 
-    document.getElementById('confirm-summary').innerHTML = `
+    summaryEl.innerHTML = `
         <div class="summary-grid">
-            <div class="summary-item"><span class="summary-label">제목</span><span>${escapeHtml(selectedTitle)}</span></div>
-            <div class="summary-item"><span class="summary-label">이미지 스타일</span><span>${style}</span></div>
+            <div class="summary-item"><span class="summary-label">제목</span><span>${escapeHtml(selectedTitle || '')}</span></div>
             <div class="summary-item"><span class="summary-label">TTS 엔진</span><span>${engine === 'edge' ? 'Edge TTS' : 'Typecast'}</span></div>
             <div class="summary-item"><span class="summary-label">음성</span><span>${voiceLabel}</span></div>
             <div class="summary-item"><span class="summary-label">감정/톤</span><span>${emotion}</span></div>
@@ -540,6 +554,37 @@ async function createJob() {
 // ──────────────────────────────────
 let maxReachedStep = 0;
 
+function showStepGuide(stepId, message) {
+    const body = document.querySelector(`#${stepId} .step-body`);
+    if (!body) return;
+    let guide = body.querySelector('.step-guide-msg');
+    if (!guide) {
+        guide = document.createElement('div');
+        guide.className = 'step-guide-msg';
+        const h2 = body.querySelector('h2');
+        if (h2) h2.after(guide);
+        else body.prepend(guide);
+    }
+    guide.innerHTML = message;
+    guide.classList.remove('hidden');
+
+    body.querySelectorAll('button, input, select').forEach(el => {
+        el.dataset.wasDisabled = el.disabled;
+        el.disabled = true;
+    });
+}
+
+function hideStepGuide(stepId) {
+    const guide = document.querySelector(`#${stepId} .step-guide-msg`);
+    if (guide) guide.classList.add('hidden');
+
+    const body = document.querySelector(`#${stepId} .step-body`);
+    if (body) body.querySelectorAll('button, input, select').forEach(el => {
+        el.disabled = el.dataset.wasDisabled === 'true';
+        delete el.dataset.wasDisabled;
+    });
+}
+
 function goToStep(stepIndex) {
     currentStepIndex = stepIndex;
 
@@ -551,6 +596,31 @@ function goToStep(stepIndex) {
             section.classList.add('hidden');
         }
     });
+
+    // 제목 단계: 데이터 없으면 안내
+    if (stepIndex === 1) {
+        if (!titleOptions) showStepGuide('step-titles', '주제를 입력하고 "제목 생성하기"를 눌러주세요.');
+        else hideStepGuide('step-titles');
+    }
+
+    // 나레이션 단계: 데이터 없으면 안내
+    if (stepIndex === 2) {
+        if (!narrationData) showStepGuide('step-narration', '제목 단계에서 "다음: 나레이션 생성"을 눌러주세요.');
+        else hideStepGuide('step-narration');
+    }
+
+    // 음성 단계: 옵션이 비어있으면 자동 로드
+    if (stepIndex === 3) {
+        const voiceSelect = document.getElementById('tts-voice');
+        if (voiceSelect && voiceSelect.options.length === 0) {
+            updateVoiceOptions();
+        }
+    }
+
+    // 확인 단계: 요약 자동 생성
+    if (stepIndex === 5) {
+        buildConfirmSummary();
+    }
 
     updateTimeline();
 
@@ -566,7 +636,6 @@ function advanceToStep(stepIndex) {
 }
 
 function clickTimelineStep(stepIndex) {
-    if (stepIndex > maxReachedStep) return;
     goToStep(stepIndex);
 }
 
@@ -646,25 +715,51 @@ async function loadBgmList() {
     }
 }
 
+let _bgmPlaying = false;
+
 function renderBgmList() {
     const container = document.getElementById('bgm-list');
     if (bgmList.length === 0) {
         container.innerHTML = '<p class="text-dim">BGM을 업로드하세요</p>';
         return;
     }
+    const isSelected = (bgm) => selectedBgm === bgm.filename;
     container.innerHTML = bgmList.map((bgm, i) => `
-        <div class="bgm-card ${selectedBgm === bgm.filename ? 'selected' : ''}"
+        <div class="bgm-card ${isSelected(bgm) ? 'selected' : ''}"
              onclick="selectBgm(${i})">
             <div class="bgm-name">${escapeHtml(bgm.filename.replace(/\.(mp3|wav|ogg)$/i, ''))}</div>
             <div class="bgm-duration">${formatTime(bgm.duration)}</div>
-            <button class="btn-small bgm-play-btn ${bgmAudio && bgmAudio._bgmIdx === i ? 'playing' : ''}"
-                    onclick="event.stopPropagation(); toggleBgmPreview(${i})"
-                    title="미리듣기">
-                ${bgmAudio && bgmAudio._bgmIdx === i ? '■' : '▶'}
-            </button>
-            ${bgm.id ? `<button class="btn-small bgm-delete-btn" onclick="event.stopPropagation(); deleteBgm('${bgm.id}', ${i})" title="삭제">✕</button>` : ''}
+            <button class="btn-small bgm-delete-btn" onclick="event.stopPropagation(); deleteBgm('${bgm.id || bgm.filename}', ${i})">삭제</button>
         </div>
+        ${isSelected(bgm) ? renderBgmPlayer(i) : ''}
     `).join('');
+}
+
+function handleBgmUploadClick() {
+    if (bgmList.length >= 3) {
+        alert('BGM은 최대 3개까지 업로드 가능합니다.\n기존 BGM을 삭제 후 다시 시도해주세요.');
+        return;
+    }
+    document.getElementById('bgm-upload-input').click();
+}
+
+function renderBgmPlayer(index) {
+    const bgm = bgmList[index];
+    const cur = bgmAudio ? bgmAudio.currentTime || 0 : 0;
+    const dur = bgm.duration || 0;
+    return `
+        <div class="bgm-player" id="bgm-player">
+            <button class="bgm-player-btn" onclick="event.stopPropagation(); toggleBgmPlayPause()">
+                ${_bgmPlaying ? '⏸' : '▶'}
+            </button>
+            <span class="bgm-player-time" id="bgm-player-time">${formatTime(cur)}</span>
+            <input type="range" class="bgm-player-bar" id="bgm-player-bar"
+                   min="0" max="${Math.floor(dur)}" value="${Math.floor(cur)}" step="1"
+                   onclick="event.stopPropagation()"
+                   oninput="seekBgm(this.value)">
+            <span class="bgm-player-duration">${formatTime(dur)}</span>
+        </div>
+    `;
 }
 
 // ── BGM 업로드 ──
@@ -705,6 +800,7 @@ async function deleteBgm(bgmId, index) {
         if (selectedBgm === bgmList[index]?.filename) {
             selectedBgm = null;
             bgmDuration = 0;
+            if (bgmAudio) { bgmAudio.pause(); bgmAudio = null; _bgmPlaying = false; }
         }
         await loadBgmList();
     } catch (err) {
@@ -713,8 +809,38 @@ async function deleteBgm(bgmId, index) {
 }
 
 function selectBgm(index) {
+    // 기존 재생 중지
+    if (bgmAudio) {
+        bgmAudio.pause();
+        bgmAudio = null;
+        _bgmPlaying = false;
+    }
+
     selectedBgm = bgmList[index].filename;
     bgmDuration = bgmList[index].duration;
+
+    // Audio 객체 생성 (preload 안 함, 재생바만 표시)
+    const bgm = bgmList[index];
+    bgmAudio = new Audio();
+    bgmAudio.preload = 'none';
+    bgmAudio.src = bgm.url;
+    bgmAudio._bgmIdx = index;
+
+    bgmAudio.addEventListener('timeupdate', () => {
+        const bar = document.getElementById('bgm-player-bar');
+        const timeEl = document.getElementById('bgm-player-time');
+        if (bar && bgmAudio) {
+            bar.value = Math.floor(bgmAudio.currentTime);
+            timeEl.textContent = formatTime(bgmAudio.currentTime);
+        }
+    });
+
+    bgmAudio.addEventListener('ended', () => {
+        _bgmPlaying = false;
+        const btn = document.querySelector('.bgm-player-btn');
+        if (btn) btn.textContent = '▶';
+    });
+
     renderBgmList();
 
     const startSection = document.getElementById('bgm-start-section');
@@ -727,38 +853,25 @@ function selectBgm(index) {
     document.getElementById('bgm-start-sec').max = bgmDuration;
 }
 
-function toggleBgmPreview(index) {
-    if (bgmAudio) {
+function toggleBgmPlayPause() {
+    if (!bgmAudio) return;
+    if (_bgmPlaying) {
         bgmAudio.pause();
-        const wasPlaying = bgmAudio._bgmIdx === index;
-        bgmAudio = null;
-        renderBgmList();
-        if (wasPlaying) return;
+        _bgmPlaying = false;
+    } else {
+        bgmAudio.play();
+        _bgmPlaying = true;
     }
+    const btn = document.querySelector('.bgm-player-btn');
+    if (btn) btn.textContent = _bgmPlaying ? '⏸' : '▶';
+}
 
-    const bgm = bgmList[index];
-    bgmAudio = new Audio(bgm.url);
-    bgmAudio._bgmIdx = index;
-
-    if (selectedBgm === bgm.filename) {
-        bgmAudio.currentTime = parseFloat(document.getElementById('bgm-start-sec').value) || 0;
+function seekBgm(val) {
+    if (bgmAudio) {
+        bgmAudio.currentTime = parseFloat(val);
+        const timeEl = document.getElementById('bgm-player-time');
+        if (timeEl) timeEl.textContent = formatTime(val);
     }
-
-    bgmAudio.play();
-    renderBgmList();
-
-    bgmAudio._timeout = setTimeout(() => {
-        if (bgmAudio) {
-            bgmAudio.pause();
-            bgmAudio = null;
-            renderBgmList();
-        }
-    }, 15000);
-
-    bgmAudio.addEventListener('ended', () => {
-        bgmAudio = null;
-        renderBgmList();
-    });
 }
 
 function formatTime(sec) {

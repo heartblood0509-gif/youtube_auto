@@ -145,6 +145,15 @@ async def upload_bgm(
     if ext not in (".mp3", ".wav", ".ogg"):
         raise HTTPException(status_code=400, detail="MP3, WAV, OGG 파일만 업로드 가능합니다")
 
+    # 개수 제한 (최대 3개)
+    if is_r2_enabled():
+        count = db.query(UserBgm).filter(UserBgm.user_id == _user.id).count()
+    else:
+        bgm_dir = settings.BGM_DIR
+        count = len([f for f in os.listdir(bgm_dir) if f.lower().endswith(('.mp3', '.wav', '.ogg'))]) if os.path.exists(bgm_dir) else 0
+    if count >= 3:
+        raise HTTPException(status_code=400, detail="BGM은 최대 3개까지 업로드 가능합니다")
+
     # 크기 체크
     contents = await file.read()
     if len(contents) > 20 * 1024 * 1024:
@@ -246,6 +255,10 @@ async def get_bgm_file(
             raise HTTPException(status_code=404, detail="BGM 파일을 찾을 수 없습니다")
 
         if r2_file_exists(bgm.r2_key):
+            # presigned URL로 리다이렉트 (Range Request 지원)
+            url = generate_presigned_url(bgm.r2_key)
+            if url:
+                return RedirectResponse(url)
             return StreamingResponse(stream_from_r2(bgm.r2_key), media_type="audio/mpeg")
         raise HTTPException(status_code=404, detail="BGM 파일을 찾을 수 없습니다")
     else:
