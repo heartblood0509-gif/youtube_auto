@@ -63,22 +63,19 @@
 
                 <div class="form-group">
                     <label for="topic">주제</label>
-                    <p class="field-help" id="topic-help">내 화장품이 해결하는 피부 고민을 적어주세요.<br>예: 홍조 피부 진정 방법 / 건조 피부 보습 루틴 / 모공 축소 관리법</p>
-                    <input type="text" id="topic" placeholder="피부 고민 또는 관리 주제" maxlength="200">
+                    <input type="text" id="topic" placeholder="예: 여름철 모공 관리 팁" maxlength="200">
                 </div>
 
                 <!-- 화장품 카테고리 전용 필드 -->
                 <div id="cosmetics-fields">
                     <div class="form-group">
                         <label for="pain-point">타겟 고민 / 페인포인트</label>
-                        <p class="field-help">내 화장품을 써야 하는 사람의 증상을 적어주세요.<br>예: 얼굴 빨개짐 / 울긋불긋 / 건조한 피부 / 화장이 들뜨고 각질 일어남</p>
-                        <input type="text" id="pain-point" placeholder="타겟의 피부 증상" maxlength="100">
+                        <input type="text" id="pain-point" placeholder="예: 모공 넓어짐, 칙칙한 피부톤" maxlength="100">
                     </div>
-                    <div class="form-row" style="align-items: flex-end;">
+                    <div class="form-row">
                         <div class="form-group">
                             <label for="ingredient">핵심 성분 (선택)</label>
-                            <p class="field-help">내 화장품의 대표 성분을 적어주세요. 모르면 비워두세요.<br>예: 시카(병풀추출물) / 히알루론산 / 나이아신아마이드</p>
-                            <input type="text" id="ingredient" placeholder="대표 성분명" maxlength="100">
+                            <input type="text" id="ingredient" placeholder="예: 나이아신아마이드" maxlength="100">
                         </div>
                         <div class="form-group">
                             <label for="mention-type">제품 언급 방식</label>
@@ -205,7 +202,7 @@
                     <label>BGM 선택</label>
                     <div class="bgm-upload-area">
                         <input type="file" id="bgm-upload-input" accept=".mp3,.wav,.ogg" hidden>
-                        <button class="btn-secondary btn-small" onclick="handleBgmUploadClick()" id="bgm-upload-btn">+ BGM 업로드</button>
+                        <button class="btn-secondary btn-small" onclick="document.getElementById('bgm-upload-input').click()" id="bgm-upload-btn">+ BGM 업로드</button>
                         <a href="https://studio.youtube.com/channel/0/music" target="_blank" class="btn-secondary btn-small">YouTube 오디오 보관함</a>
                         <span class="text-dim" style="font-size:12px">MP3, WAV, OGG (최대 20MB)</span>
                     </div>
@@ -247,6 +244,6 @@
     </div>
 
     <script src="/static/js/auth.js"></script>
-    <script src="/static/js/app.js?v=8"></script>
+    <script src="/static/js/app.js"></script>
 </body>
 </html>
