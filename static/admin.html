@@ -196,9 +196,25 @@
                     ${job.topic ? `<span class="job-topic">${escapeHtml(job.topic)}</span>` : ''}
                 </div>` : ''}
                 <p class="job-step">${escapeHtml(job.current_step || '')}</p>
-                ${job.video_url ? `<a href="${escapeHtml(job.video_url)}" class="btn-small btn-primary" download>다운로드</a>` : ''}
+                ${jobActions(job)}
             </div>
         `).join('');
+    }
+
+    function jobActions(job) {
+        if (job.files_expired) {
+            return '<span class="text-dim" style="font-size:12px">파일이 삭제되었습니다 (30일 경과)</span>';
+        }
+        if (job.video_url) {
+            return `<a href="${escapeHtml(job.video_url)}" class="btn-small btn-primary" download>다운로드</a>`;
+        }
+        if (job.status === 'preview_ready' || job.status === 'awaiting_confirmation') {
+            return `<a href="/static/preview.html?job=${escapeHtml(job.job_id)}" class="btn-small btn-secondary">미리보기</a>`;
+        }
+        if (['pending', 'generating_images', 'generating_tts', 'assembling_video'].includes(job.status)) {
+            return `<a href="/static/status.html?job=${escapeHtml(job.job_id)}" class="btn-small btn-secondary">진행 상태</a>`;
+        }
+        return '';
     }
 
     function statusLabel(status) {
