@@ -183,6 +183,7 @@ async function generateTitles() {
 
 function displayTitles(data) {
     hideLoading();
+    hideStepGuide('step-titles');
     document.getElementById('btn-next-title').disabled = true;
     document.getElementById('title-split-editor').classList.add('hidden');
 
@@ -255,6 +256,7 @@ async function generateNarration() {
 
 function displayNarration(data) {
     hideLoading();
+    hideStepGuide('step-narration');
 
     document.getElementById('selected-title-display').textContent = selectedTitle;
 
@@ -298,6 +300,11 @@ async function approveNarration() {
     // 편집된 나레이션 텍스트 수집 & 검증
     const textInputs = document.querySelectorAll('#narration-lines .line-text');
     const narrationLines = Array.from(textInputs).map(input => input.value.trim());
+
+    if (narrationLines.length === 0) {
+        alert('먼저 나레이션을 생성해주세요');
+        return;
+    }
 
     if (narrationLines.some(line => !line)) {
         alert('빈 나레이션 줄이 있습니다');
@@ -477,8 +484,23 @@ function confirmBgmSettings() {
 function buildConfirmSummary() {
     const summaryEl = document.getElementById('confirm-summary');
     const createBtn = document.querySelector('#step-confirm .btn-primary');
-    if (!scriptData) {
-        summaryEl.innerHTML = '<p class="text-dim" style="text-align:center; padding:40px 20px; font-size:16px; line-height:1.6;">아직 영상 생성 준비가 완료되지 않았습니다.<br>주제 → 제목 → 나레이션 단계를 먼저 진행해주세요.</p>';
+
+    // 필수 단계 검사
+    const missing = [];
+    if (!document.getElementById('topic').value.trim()) missing.push({ idx: 0, name: '주제 입력' });
+    if (!selectedTitle) missing.push({ idx: 1, name: '제목 선택' });
+    if (!scriptData) missing.push({ idx: 2, name: '나레이션 확정' });
+
+    if (missing.length > 0) {
+        const items = missing.map(m =>
+            `<li><a href="#" onclick="goToStep(${m.idx}); return false;">${escapeHtml(m.name)}</a></li>`
+        ).join('');
+        summaryEl.innerHTML = `
+            <p class="text-dim" style="text-align:center; padding:20px; font-size:15px; line-height:1.7;">
+                아직 영상 생성 준비가 완료되지 않았습니다.<br>아래 단계를 먼저 진행해주세요:
+            </p>
+            <ul class="missing-steps">${items}</ul>
+        `;
         if (createBtn) createBtn.disabled = true;
         return;
     }
@@ -567,22 +589,11 @@ function showStepGuide(stepId, message) {
     }
     guide.innerHTML = message;
     guide.classList.remove('hidden');
-
-    body.querySelectorAll('button, input, select').forEach(el => {
-        el.dataset.wasDisabled = el.disabled;
-        el.disabled = true;
-    });
 }
 
 function hideStepGuide(stepId) {
     const guide = document.querySelector(`#${stepId} .step-guide-msg`);
     if (guide) guide.classList.add('hidden');
-
-    const body = document.querySelector(`#${stepId} .step-body`);
-    if (body) body.querySelectorAll('button, input, select').forEach(el => {
-        el.disabled = el.dataset.wasDisabled === 'true';
-        delete el.dataset.wasDisabled;
-    });
 }
 
 function goToStep(stepIndex) {

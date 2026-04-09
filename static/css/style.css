@@ -1521,3 +1521,8 @@ input[type="range"] {
         padding: 12px 0 8px;
     }
 }
+
+/* 6단계 누락 단계 안내 */
+.missing-steps { list-style: none; padding: 0; text-align: center; }
+.missing-steps li { margin: 8px 0; }
+.missing-steps a { color: var(--accent); text-decoration: underline; cursor: pointer; }
