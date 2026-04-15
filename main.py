@@ -5,10 +5,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse
 from contextlib import asynccontextmanager
 from db.database import init_db
-from api.routes import generate, jobs, preview, assets, tts_preview, auth, admin
+from api.routes import generate, jobs, preview, assets, tts_preview, auth, admin, products
 from api.routes.assets import bgm_router
 from config import settings
+import logging
 import os
+
+logging.basicConfig(level=logging.INFO)
 
 
 @asynccontextmanager
@@ -46,6 +49,7 @@ app.include_router(assets.router)
 app.include_router(bgm_router)
 app.include_router(tts_preview.router)
 app.include_router(admin.router)
+app.include_router(products.router)
 
 
 @app.get("/health")

@@ -76,9 +76,9 @@
                     </div>
                     <div class="form-row" style="align-items: flex-end;">
                         <div class="form-group">
-                            <label for="ingredient">핵심 성분 (선택)</label>
-                            <p class="field-help">내 화장품의 대표 성분을 적어주세요. 모르면 비워두세요.<br>예: 시카(병풀추출물) / 히알루론산 / 나이아신아마이드</p>
-                            <input type="text" id="ingredient" placeholder="대표 성분명" maxlength="100">
+                            <label for="ingredient">핵심 성분 또는 제품 역할 (선택)</label>
+                            <p class="field-help">제품의 대표 성분이나, 제품이 문제를 어떻게 해결하는지 적어주세요.<br>예시 (성분): 시카(병풀추출물) / 히알루론산 / 나이아신아마이드<br>예시 (역할): 샴푸가 노폐물을 자극 없이 제거하고 헤어토닉이 수분을 채워줌<br>예시 (혼합): 자연유래성분이 속건조를 해결해서 가려움 해소</p>
+                            <input type="text" id="ingredient" placeholder="성분 또는 제품이 해결하는 방식" maxlength="200">
                         </div>
                         <div class="form-group">
                             <label for="mention-type">제품 언급 방식</label>
@@ -91,6 +91,22 @@
                     <div id="product-name-field" class="form-group" style="display:none;">
                         <label for="product-name">제품명</label>
                         <input type="text" id="product-name" placeholder="예: 닥터자르트 시카페어 크림" maxlength="100">
+                    </div>
+
+                    <div class="form-group" id="product-templates">
+                        <label>내 제품 <span style="color: var(--primary);">*</span> <small style="color: var(--text-secondary); font-weight: normal;">(마지막 CTA 장면에 등장)</small></label>
+                        <p class="field-help">업로드한 제품 중 하나를 클릭해서 선택하세요. 9:16 비율 이미지 권장.</p>
+                        <div id="product-grid" class="style-card-grid">
+                            <div class="style-card product-upload-card" onclick="triggerProductUpload()">
+                                <div class="style-card-preview">
+                                    <span class="style-card-icon">+</span>
+                                </div>
+                                <div class="style-card-meta">
+                                    <span class="style-card-name">제품 추가</span>
+                                </div>
+                            </div>
+                        </div>
+                        <input type="file" id="product-file-input" accept="image/png,image/jpeg,image/webp,image/bmp" hidden>
                     </div>
                 </div>
 

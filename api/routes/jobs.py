@@ -6,12 +6,14 @@ from sqlalchemy.orm import Session
 from api.models import JobCreateRequest, JobResponse, JobStatus
 from api.deps import get_approved_user, get_user_job, get_user_job_by_uid
 from db.database import get_db
-from db.models import Job, User
+from db.models import Job, User, UserProduct
 from config import settings
 import asyncio
 import glob
 import json
 import os
+import shutil
+import uuid
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -55,6 +57,29 @@ def _job_to_response(job: Job, user_map: dict | None = None) -> JobResponse:
     )
 
 
+def _copy_product_snapshot(product: UserProduct, dest_path: str):
+    """제품 이미지를 job 폴더로 스냅샷 복사. 로컬 우선, 없으면 R2에서 다운로드."""
+    from api.routes.products import _local_path
+    from core.r2_storage import is_r2_enabled, stream_from_r2
+
+    local_src = _local_path(product.user_id, product.id)
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+
+    if os.path.exists(local_src):
+        shutil.copy(local_src, dest_path)
+        return
+
+    if is_r2_enabled() and product.r2_key:
+        with open(dest_path, "wb") as f:
+            for chunk in stream_from_r2(product.r2_key):
+                f.write(chunk)
+        if os.path.getsize(dest_path) > 0:
+            return
+        os.remove(dest_path)
+
+    raise RuntimeError("제품 이미지 원본을 찾을 수 없습니다")
+
+
 @router.post("/", response_model=JobResponse)
 async def create_job(
     request: JobCreateRequest,
@@ -63,7 +88,27 @@ async def create_job(
     _user: User = Depends(get_approved_user),
 ):
     """작업 생성 → 이미지 생성 시작"""
+    # Job ID를 미리 생성 (스냅샷 경로 계산용)
+    job_id = uuid.uuid4().hex[:12]
+
+    # 제품 이미지 검증 + 스냅샷 준비 (Job 커밋 전에 먼저)
+    product = None
+    if request.product_image_id:
+        product = db.query(UserProduct).filter(
+            UserProduct.id == request.product_image_id,
+            UserProduct.user_id == _user.id,
+        ).first()
+        if not product:
+            raise HTTPException(status_code=400, detail="선택한 제품을 찾을 수 없습니다")
+
+        snapshot_path = os.path.join(settings.STORAGE_DIR, job_id, "product", "product.png")
+        try:
+            _copy_product_snapshot(product, snapshot_path)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"제품 이미지 준비 실패: {e}")
+
     job = Job(
+        id=job_id,
         user_id=_user.id,
         topic=request.topic,
         style=request.style.value,
@@ -78,6 +123,7 @@ async def create_job(
         script_json=json.dumps(
             [line.model_dump() for line in request.lines], ensure_ascii=False
         ),
+        product_image_id=request.product_image_id,
         bgm_volume=request.bgm_volume,
         bgm_filename=request.bgm_filename,
         bgm_start_sec=request.bgm_start_sec,

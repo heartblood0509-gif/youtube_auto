@@ -27,6 +27,7 @@ def _update_r2_sync(job_id: str, status: str):
 async def generate_images_for_job(job_id: str):
     """이미지 생성 백그라운드 태스크"""
     from core.gemini_client import generate_all_images
+    from PIL import Image
 
     db = SessionLocal()
     try:
@@ -39,6 +40,16 @@ async def generate_images_for_job(job_id: str):
         lines = json.loads(job.script_json)
         job_dir = os.path.join(settings.STORAGE_DIR, job_id)
 
+        # CTA용 제품 이미지 스냅샷 로드 (있으면)
+        product_image = None
+        snapshot_path = os.path.join(job_dir, "product", "product.png")
+        if job.product_image_id and os.path.exists(snapshot_path):
+            try:
+                product_image = Image.open(snapshot_path)
+                product_image.load()  # 지연 로딩 방지
+            except Exception:
+                product_image = None
+
         keys = resolve_user_api_keys(db, job.user_id)
 
         try:
@@ -49,6 +60,7 @@ async def generate_images_for_job(job_id: str):
                 storage_dir=job_dir,
                 progress_callback=update_job_progress,
                 api_key=keys["gemini"],
+                product_image=product_image,
             )
 
             update_job_progress(job_id, "preview_ready", 0.4, "이미지 생성 완료 - 미리보기 확인")
@@ -233,7 +245,8 @@ async def render_video_for_job(job_id: str):
 
 async def regenerate_image_for_job(job_id: str, line_index: int, korean_request: str = None, english_prompt: str = None):
     """단일 이미지 재생성 — 영어 프롬프트 직접 사용 또는 한글→영어 변환"""
-    from core.gemini_client import generate_image, korean_to_nb2_prompt
+    from core.gemini_client import generate_image, korean_to_nb2_prompt, PRODUCT_REFERENCE_PREFIX
+    from PIL import Image
 
     db = SessionLocal()
     try:
@@ -258,16 +271,32 @@ async def regenerate_image_for_job(job_id: str, line_index: int, korean_request:
                     api_key=keys["gemini"],
                 )
 
-            # 새 프롬프트를 script_json에 반영
+            # 새 프롬프트를 script_json에 반영 (접두어 없는 원본만 저장)
             line["image_prompt"] = prompt
             job.script_json = json.dumps(lines, ensure_ascii=False)
             db.commit()
 
+            # CTA 라인이고 스냅샷 존재 시 호출 시점에만 접두어 + 참조 이미지 추가
+            final_prompt = prompt
+            refs = None
+            is_last_line = (line_index == len(lines) - 1)
+            if is_last_line:
+                snapshot_path = os.path.join(job_dir, "product", "product.png")
+                if os.path.exists(snapshot_path):
+                    try:
+                        product_img = Image.open(snapshot_path)
+                        product_img.load()
+                        refs = [product_img]
+                        final_prompt = PRODUCT_REFERENCE_PREFIX + prompt
+                    except Exception:
+                        pass
+
             await generate_image(
-                prompt=prompt,
+                prompt=final_prompt,
                 style=job.style,
                 output_path=output_path,
                 api_key=keys["gemini"],
+                reference_images=refs,
             )
 
             job.status = "preview_ready"

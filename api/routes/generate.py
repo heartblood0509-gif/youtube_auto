@@ -76,6 +76,7 @@ async def generate_image_prompts_endpoint(request: ImagePromptRequest, db: Sessi
             narration_lines=request.narration_lines,
             style=request.style.value,
             category=request.category,
+            topic=request.topic,
             api_key=keys["gemini"],
         )
         return ImagePromptResponse(**result)

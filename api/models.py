@@ -3,6 +3,7 @@
 from pydantic import BaseModel, Field
 from typing import Optional
 from enum import Enum
+import datetime
 
 
 class StylePreset(str, Enum):
@@ -96,6 +97,7 @@ class ImagePromptRequest(BaseModel):
     narration_lines: list[str]
     style: StylePreset = StylePreset.REALISTIC
     category: str = "general"
+    topic: str = ""
 
 
 class ScriptLine(BaseModel):
@@ -123,6 +125,19 @@ class JobCreateRequest(BaseModel):
     bgm_volume: float = Field(default=0.12, ge=0.0, le=0.5)
     bgm_filename: Optional[str] = None
     bgm_start_sec: float = Field(default=0.0, ge=0.0)
+    product_image_id: Optional[str] = None
+
+
+# ── 제품 이미지 ──
+
+class UserProductResponse(BaseModel):
+    id: str
+    name: str
+    filename: str
+    created_at: datetime.datetime
+
+    class Config:
+        from_attributes = True
 
 
 # ── 응답 ──

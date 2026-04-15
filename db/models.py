@@ -38,6 +38,17 @@ class UserBgm(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
+class UserProduct(Base):
+    __tablename__ = "user_products"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    user_id = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    filename = Column(String, nullable=False)
+    r2_key = Column(String, default="")
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
 class Job(Base):
     __tablename__ = "jobs"
 
@@ -59,6 +70,7 @@ class Job(Base):
     title_line1 = Column(String, nullable=True)
     title_line2 = Column(String, nullable=True)
     script_json = Column(Text, default="[]")
+    product_image_id = Column(String, nullable=True)
     bgm_volume = Column(Float, default=0.12)
     bgm_filename = Column(String, nullable=True)
     bgm_start_sec = Column(Float, default=0.0)

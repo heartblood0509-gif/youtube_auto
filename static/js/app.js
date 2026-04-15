@@ -80,6 +80,120 @@ function toggleCategoryFields() {
     }
 }
 
+// ──────────────────────────────────
+// 제품 이미지 템플릿 (CTA 라인용)
+// ──────────────────────────────────
+let userProducts = [];
+window._selectedProductId = null;
+
+async function loadUserProducts() {
+    try {
+        const resp = await authFetch('/api/products');
+        if (!resp.ok) return;
+        userProducts = await resp.json();
+        renderProductGrid();
+    } catch (e) {
+        console.error('제품 목록 로드 실패:', e);
+    }
+}
+
+function renderProductGrid() {
+    const grid = document.getElementById('product-grid');
+    if (!grid) return;
+    const uploadCard = `
+        <div class="style-card product-upload-card" onclick="triggerProductUpload()">
+            <div class="style-card-preview">
+                <span class="style-card-icon">+</span>
+            </div>
+            <div class="style-card-meta">
+                <span class="style-card-name">제품 추가</span>
+            </div>
+        </div>
+    `;
+    const productCards = userProducts.map(p => {
+        const selected = window._selectedProductId === p.id ? 'selected' : '';
+        return `
+            <div class="style-card ${selected}" data-product-id="${p.id}" onclick="selectProduct('${p.id}')">
+                <button class="product-delete-btn" onclick="deleteProduct(event, '${p.id}')" title="삭제">×</button>
+                <div class="style-card-preview">
+                    <img class="product-thumb" src="/api/products/${p.id}/image" alt="${escapeHtml(p.name)}">
+                </div>
+                <div class="style-card-meta">
+                    <span class="style-card-name">${escapeHtml(p.name)}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+    grid.innerHTML = productCards + uploadCard;
+}
+
+function selectProduct(id) {
+    window._selectedProductId = id;
+    renderProductGrid();
+}
+
+function triggerProductUpload() {
+    if (userProducts.length >= 20) {
+        alert('제품은 최대 20개까지 등록 가능합니다.\n기존 제품을 삭제 후 다시 시도해주세요.');
+        return;
+    }
+    const input = document.getElementById('product-file-input');
+    input.value = '';  // 같은 파일 재선택 허용
+    input.onchange = handleProductFileSelect;
+    input.click();
+}
+
+async function handleProductFileSelect(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const name = prompt('제품명을 입력하세요 (최대 50자)', file.name.replace(/\.[^.]+$/, ''));
+    if (!name || !name.trim()) return;
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('name', name.trim());
+
+    try {
+        const resp = await authFetch('/api/products', {
+            method: 'POST',
+            body: formData,
+        });
+        if (!resp.ok) {
+            const err = await resp.json();
+            alert(err.detail || '업로드 실패');
+            return;
+        }
+        const newProduct = await resp.json();
+        window._selectedProductId = newProduct.id;  // 업로드 직후 자동 선택
+        await loadUserProducts();
+    } catch (err) {
+        alert('업로드 실패: ' + err.message);
+    }
+}
+
+async function deleteProduct(event, id) {
+    event.stopPropagation();
+    const product = userProducts.find(p => p.id === id);
+    if (!product) return;
+    if (!confirm(`"${product.name}" 제품을 삭제하시겠어요?`)) return;
+
+    try {
+        const resp = await authFetch(`/api/products/${id}`, { method: 'DELETE' });
+        if (!resp.ok) {
+            const err = await resp.json();
+            alert(err.detail || '삭제 실패');
+            return;
+        }
+        if (window._selectedProductId === id) {
+            window._selectedProductId = null;
+        }
+        await loadUserProducts();
+    } catch (err) {
+        alert('삭제 실패: ' + err.message);
+    }
+}
+
 function autoSplitTitle(text) {
     const words = text.split(' ').filter(w => w);
     if (words.length <= 1) return [text, ''];
@@ -325,6 +439,7 @@ async function approveNarration() {
                 narration_lines: narrationLines,
                 style: 'realistic',
                 category,
+                topic: document.getElementById('topic').value.trim(),
             }),
         });
         if (!resp.ok) {
@@ -532,6 +647,13 @@ function buildConfirmSummary() {
 async function createJob() {
     if (!scriptData) return;
 
+    // 화장품 카테고리는 제품 이미지 필수
+    const category = document.getElementById('category').value;
+    if (category === 'cosmetics' && !window._selectedProductId) {
+        alert('화장품 영상은 제품 이미지를 먼저 등록하고 선택해주세요.\n(주제 설정 단계에서 등록)');
+        return;
+    }
+
     const payload = {
         topic: document.getElementById('topic').value,
         style: 'realistic',
@@ -547,6 +669,7 @@ async function createJob() {
         bgm_volume: parseInt(document.getElementById('bgm-volume').value) / 100,
         bgm_filename: selectedBgm || null,
         bgm_start_sec: parseFloat(document.getElementById('bgm-start-sec').value) || 0,
+        product_image_id: window._selectedProductId || null,
     };
 
     showLoading('작업 등록 중...');
@@ -895,3 +1018,4 @@ function formatTime(sec) {
 // 페이지 로드 시 초기화
 updateTimeline(0);
 loadBgmList();
+loadUserProducts();

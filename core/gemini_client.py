@@ -9,6 +9,9 @@ import json
 import os
 import re
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 _nb2_guide = None
 
@@ -30,6 +33,21 @@ STYLE_SUFFIXES = {
 }
 
 MOTION_TYPES = ["zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down"]
+
+PRODUCT_REFERENCE_PREFIX = (
+    "IMPORTANT: This is the FINAL CTA shot — make the PRODUCT the visual hero. "
+    "The reference image shows the exact product that must appear — "
+    "reproduce it faithfully (same shape, color, label design, packaging).\n\n"
+    "Composition rules:\n"
+    "- The product dominates the foreground, filling roughly half the frame\n"
+    "- Camera close enough that the product feels prominent and detailed\n"
+    "- Use shallow depth of field — product tack-sharp, background softly blurred\n"
+    "- A simple Korean hand may hold or present the product (no detailed person, "
+    "no face in frame)\n"
+    "- Soft studio or natural lighting that highlights the product's texture and label\n"
+    "- Clean, minimal background — plain surface or softly blurred lifestyle context\n\n"
+    "Scene description:\n"
+)
 
 
 def get_client(api_key: str = None) -> genai.Client:
@@ -54,7 +72,7 @@ def _build_category_context(
     if pain_point:
         ctx += f"타겟 고민: {pain_point}\n"
     if ingredient:
-        ctx += f"핵심 성분: {ingredient}\n"
+        ctx += f"핵심 성분 또는 제품 역할: {ingredient}\n"
     if mention_type == "comment":
         ctx += "제품 언급 방식: 댓글 유도 (제품명을 직접 말하지 않고 '궁금하면 댓글!' 등으로 유도)\n"
     elif mention_type == "direct":
@@ -162,7 +180,11 @@ async def generate_narration(
         if pain_point:
             line_instructions += f"- Line 1~2에서 반드시 '{pain_point}' 고민을 직접 언급하며 공감하세요.\n"
         if ingredient:
-            line_instructions += f"- Line 3~5에서 반드시 '{ingredient}' 성분이 왜 효과적인지 설명하세요.\n"
+            line_instructions += (
+                f"- Line 3~5에서 '{ingredient}'의 핵심 포인트를 요약해서, "
+                f"왜 효과적인지 또는 어떻게 문제를 해결하는지 자연스럽게 설명하세요. "
+                f"내용이 길면 핵심만 뽑아서 라인에 녹이세요.\n"
+            )
         if mention_type == "comment":
             line_instructions += "- Line 6(CTA)에서 반드시 '궁금하면 댓글!', '댓글로 알려드려요' 등으로 끝내세요. 제품명은 절대 직접 언급하지 마세요.\n"
         elif mention_type == "direct":
@@ -229,6 +251,7 @@ async def generate_image_prompts(
     narration_lines: list[str],
     style: str,
     category: str = "general",
+    topic: str = "",
     api_key: str = None,
 ) -> dict:
     """
@@ -244,14 +267,108 @@ async def generate_image_prompts(
     cosmetics_guide = ""
     if category == "cosmetics":
         cosmetics_guide = """
-[COSMETICS SHOT TYPE GUIDE]
-- When narration describes skin problems, damage, texture, or barrier issues, actively use EXTREME CLOSE-UP or MACRO shots (show every pore, crack, flake, redness in microscopic detail).
-- When narration describes ingredients or scientific explanation, use MACRO shots of product texture, serum droplets, or skin surface absorbing the product.
-- Use photography terms like: 100mm macro lens, clinical lighting, visible micro-cracks, flaky texture, glistening, pearlescent glow, dermatological photography style.
+[COSMETICS VISUAL DIRECTION GUIDE]
+
+When the narration describes a skin/body concern, complete this analysis
+and output it in the "symptom_analysis" field BEFORE writing the image prompt.
+Skip this analysis for lines about ingredients, product, or general scenes.
+
+STEP 1 — VISUAL TRANSLATION
+  What does this symptom actually look like?
+  - Visible condition (홍조, 여드름, 다크서클): describe exact visual appearance
+  - Sensation (가려움, 당김, 따가움): find the visible behavior or sign
+  - Non-skin (탈모, 손톱): identify the correct body area and visual indicator
+
+STEP 2 — DISTINGUISH FROM LOOKALIKES
+  What could this be visually confused with?
+  What visual detail differentiates them?
+
+STEP 3 — PRECISE WORD SELECTION
+  Choose English words that specifically describe THIS condition's visual signature
+  and cannot be confused with the lookalike from Step 2.
+
+[EXAMPLES]
+Example — 홍조:
+  symptom_analysis: "Smooth redness on cheeks/nose. Confused with acne — but flush is a gradient, acne is raised bumps. USE: flushed, deep red hue"
+  image_prompt: "her cheeks and nose noticeably flushed with a deep red hue"
+
+Example — 가려움증:
+  symptom_analysis: "Invisible sensation → show scratching behavior. Confused with injury — but scratching is gentle/repetitive. USE: scratching, irritated"
+  image_prompt: "a Korean woman uncomfortably scratching her forearm, faint pink streaks on sensitive skin"
+
+[CAMERA DISTANCE GUIDE]
+Vary the camera distance across lines. NEVER use the same distance for consecutive lines.
+
+EXTREME MACRO — frame fills with ~2cm² of the target surface.
+  Individual pores, microscopic cracks, flaky layers, or product texture visible.
+  Subject must be a single body part: "a Korean woman's cheek" NOT "a Korean woman".
+  Keywords: extreme macro photography, microscopic details, sharp focus,
+  100mm macro lens at minimum focus distance, harsh/dramatic clinical lighting.
+  Use for: skin/hair/nail problem detail (lines 1-2), product texture on target area.
+  At least ONE extreme macro MUST appear in lines 1-3.
+
+CLOSE-UP — a single feature fills the frame (cheek, nose bridge, scalp, nail).
+  Keywords: extreme close-up, highly detailed, clinical lighting.
+  Use for: symptom close-up, product application moment.
+
+PORTRAIT — full face visible, expressions clear. 85mm lens, shallow depth of field.
+  Use for: emotional reaction, before/after transformation.
+
+MEDIUM — face + shoulders + environment context.
+  Use for: lifestyle scene, product-in-hand (NOT for CTA — see CTA LINE GUIDE below).
+
+[INGREDIENT/SOLUTION LINE GUIDE]
+When narration describes an ingredient or how the product works:
+- The PRODUCT TEXTURE is the protagonist, NOT the person.
+- Show the product meeting its target area at EXTREME MACRO or CLOSE-UP distance.
+- Focus on the product's texture (glistening, translucent, viscous, milky, pearlescent).
+- Determine the target area from the video topic:
+  skincare → skin surface, shampoo → hair/scalp, lip care → lips, nail care → cuticle
+- Keywords: being applied, sinking into, absorbed, melting into, lathering, soft studio lights.
+- Do NOT show a person's expression — show only the product interacting with the target.
+
+[CTA LINE GUIDE — LAST NARRATION LINE]
+The LAST line is always a CTA (call-to-action). Compose this as a
+PRODUCT-HERO shot, NOT a person shot:
+- The PRODUCT is the main subject, dominating the frame (roughly half the frame)
+- Close-up or medium close-up of the product on a clean surface,
+  or held by a simple Korean hand
+- NO face in frame (a hand is OK; if any person appears, no face visible)
+- Shallow depth of field — product tack-sharp, background softly blurred
+- Premium commercial aesthetic, soft studio or natural lighting
+- Clean minimal background
+
+EXCEPTION: This line is exempt from the "never use the same distance as
+previous line" rule above. Use CLOSE-UP or MEDIUM regardless of line 5's distance.
+
+[REALISM RULE]
+- ALWAYS depict real people, real skin, and real products in photorealistic style.
+- NEVER use metaphors, diagrams, 3D renders, scientific visualizations, or abstract art.
+- "피부 장벽이 무너졌다" → show real damaged/irritated skin, NOT a crumbling brick wall.
+- "성분이 흡수된다" → show product being applied to real skin, NOT molecular diagrams.
 """
+
+    if category == "cosmetics":
+        output_format = """Output ONLY valid JSON:
+{{
+    "lines": [
+        {{"text": "나레이션 원문", "symptom_analysis": "Steps 1-3 reasoning here (or null if not a symptom line)", "image_prompt": "English image description...", "motion": "zoom_in"}},
+        ...
+    ]
+}}"""
+    else:
+        output_format = """Output ONLY valid JSON:
+{{
+    "lines": [
+        {{"text": "나레이션 원문", "image_prompt": "English image description...", "motion": "zoom_in"}},
+        ...
+    ]
+}}"""
 
     prompt = f"""You are a visual director for YouTube Shorts.
 For each narration line below, create an English image generation prompt and assign a camera motion type.
+
+Video topic: {topic}
 
 Narration lines:
 {lines_text}
@@ -280,18 +397,15 @@ Image style: {style_desc}
 - pan_left/pan_right: horizontal movement
 - pan_up: hope/aspiration, pan_down: grounding/reality
 
-Output ONLY valid JSON:
-{{
-    "lines": [
-        {{"text": "나레이션 원문", "image_prompt": "English image description...", "motion": "zoom_in"}},
-        ...
-    ]
-}}"""
+{output_format}"""
 
     response = client.models.generate_content(
         model=settings.GEMINI_TEXT_MODEL,
         contents=prompt,
-        config=genai.types.GenerateContentConfig(temperature=0.7),
+        config=genai.types.GenerateContentConfig(
+            temperature=0.7,
+            response_mime_type="application/json",
+        ),
     )
     result = _parse_gemini_json(response.text)
 
@@ -300,6 +414,9 @@ Output ONLY valid JSON:
     for line in result["lines"]:
         if line.get("motion") not in MOTION_TYPES:
             line["motion"] = "zoom_in"
+        analysis = line.pop("symptom_analysis", None)
+        if analysis:
+            logger.info("증상 분석: %s → %s", analysis, line.get("image_prompt", "")[:60])
     return result
 
 
@@ -353,22 +470,28 @@ async def generate_image(
     progress_callback=None,
     job_id: str = None,
     api_key: str = None,
+    reference_images: list = None,
 ) -> str:
     """
     Nano Banana 2 (Gemini 3.1 Flash Image)로 이미지 생성.
     429 할당량 초과 시 자동 재시도 (최대 max_retries회).
+    reference_images: PIL.Image 리스트. 제공 시 contents에 함께 전달되어 이미지 편집/합성에 사용.
     반환: 저장된 파일 경로
     """
     client = get_client(api_key)
     style_suffix = STYLE_SUFFIXES.get(style, "")
     full_prompt = f"{prompt}, {style_suffix}" if style_suffix else prompt
 
+    contents = [full_prompt]
+    if reference_images:
+        contents.extend(reference_images)
+
     for attempt in range(max_retries + 1):
         try:
             response = await asyncio.to_thread(
                 client.models.generate_content,
                 model=settings.GEMINI_IMAGE_MODEL,
-                contents=full_prompt,
+                contents=contents,
                 config=types.GenerateContentConfig(
                     response_modalities=["IMAGE"],
                     image_config=types.ImageConfig(
@@ -431,8 +554,12 @@ async def generate_all_images(
     storage_dir: str,
     progress_callback=None,
     api_key: str = None,
+    product_image=None,
 ) -> list[str]:
-    """대본의 모든 이미지를 병렬 생성. 반환: 이미지 경로 목록"""
+    """대본의 모든 이미지를 병렬 생성. 반환: 이미지 경로 목록
+
+    product_image: PIL.Image — 제공 시 마지막 라인(CTA)에만 참조 이미지로 전달.
+    """
     total = len(lines)
 
     if progress_callback:
@@ -448,13 +575,23 @@ async def generate_all_images(
     async def _generate_and_track(i):
         nonlocal completed
         output_path = os.path.join(storage_dir, "images", f"img_{i:02d}.png")
+
+        # CTA 라인이고 제품 이미지가 있으면 접두어 + 참조 이미지 전달
+        # (접두어는 호출 시점에만 붙이고 script_json에는 저장하지 않음)
+        prompt = lines[i]["image_prompt"]
+        refs = None
+        if i == total - 1 and product_image is not None:
+            prompt = PRODUCT_REFERENCE_PREFIX + prompt
+            refs = [product_image]
+
         result = await generate_image(
-            prompt=lines[i]["image_prompt"],
+            prompt=prompt,
             style=style,
             output_path=output_path,
             progress_callback=progress_callback,
             job_id=job_id,
             api_key=api_key,
+            reference_images=refs,
         )
         completed += 1
         if progress_callback:
