@@ -2,6 +2,7 @@
 
 from google import genai
 from google.genai import types
+from pydantic import BaseModel, Field
 from config import settings
 import asyncio
 import base64
@@ -14,6 +15,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 _nb2_guide = None
+_promo_comment_template = None
 
 
 def _load_nb2_guide() -> str:
@@ -24,6 +26,27 @@ def _load_nb2_guide() -> str:
         with open(guide_path, "r", encoding="utf-8") as f:
             _nb2_guide = f.read()
     return _nb2_guide
+
+
+def _load_promo_comment_template() -> str:
+    """화장품 '홍보성·고정댓글 유도형' 나레이션 템플릿 로드 (캐싱)"""
+    global _promo_comment_template
+    if _promo_comment_template is None:
+        path = os.path.join(os.path.dirname(__file__), "prompts", "promo_comment.md")
+        with open(path, "r", encoding="utf-8") as f:
+            _promo_comment_template = f.read()
+    return _promo_comment_template
+
+
+# ── promo_comment 나레이션 Structured Output 스키마 ──
+# Gemini가 자유 산문으로 작성하면 SDK가 이 스키마에 맞춰 JSON으로 구조화.
+# role 필드는 제외 — 서버가 인덱스 기준으로 사후 할당 (line1~4, cta).
+class _PromoCommentLine(BaseModel):
+    text: str
+
+
+class _PromoCommentNarration(BaseModel):
+    lines: list[_PromoCommentLine] = Field(..., min_length=5, max_length=5)
 
 
 STYLE_SUFFIXES = {
@@ -76,23 +99,19 @@ def _build_category_context(
         ctx = "\n[영상 목적: 정보성]\n"
         if keyword:
             ctx += f"핵심 키워드: {keyword}\n"
-        ctx += (
-            "- 제품명·브랜드명 언급 금지.\n"
-            "- 순수 정보 전달. 구매 권유 금지.\n"
-            "- CTA는 정보 마무리로 자연스럽게 끝내세요.\n"
-        )
+        ctx += "- 제품명·브랜드명 언급 금지.\n"
         return ctx
 
     # promo
-    ctx = "\n[영상 목적: 홍보성]\n"
+    has_required_inputs = bool(pain_point) or bool(ingredient)
+    if has_required_inputs:
+        ctx = "\n[화장품 홍보성 — 아래 내용을 대본에 반드시 녹여야 합니다]\n"
+    else:
+        ctx = "\n[영상 목적: 홍보성]\n"
     if pain_point:
         ctx += f"타겟 고민: {pain_point}\n"
     if ingredient:
         ctx += f"핵심 성분: {ingredient}\n"
-    ctx += (
-        "- 제품명은 직접 언급하지 마세요 (성분·역할 중심).\n"
-        "- CTA는 블로그/더보기/프로필 링크로 유도.\n"
-    )
     return ctx
 
 
@@ -124,6 +143,9 @@ async def generate_titles(
     Gemini로 제목 3~4개 생성.
     반환: {"titles": [{"title": "...", "hook": "..."}, ...]}
     """
+    if category == "cosmetics" and content_type == "promo_comment":
+        return await _generate_titles_promo_comment(topic, api_key)
+
     client = get_client(api_key)
     category_context = _build_category_context(category, pain_point, ingredient, content_type, keyword)
     if keyword:
@@ -166,6 +188,36 @@ Output ONLY valid JSON:
     return result
 
 
+async def _generate_titles_promo_comment(topic: str, api_key: str = None) -> dict:
+    """화장품 '홍보성·고정댓글 유도형' 제목 생성 — 반말·숫자 훅 포맷."""
+    client = get_client(api_key)
+    prompt = f"""주제: "{topic}"
+이 주제로 YouTube Shorts 제목 4개를 반말 구어체로 만들어.
+- 숫자 훅 선호 (예: "단 3초면 끝", "99%가 모르는")
+- 강한 호기심·충격으로 시청자가 본문을 반드시 열게 만드는 톤
+- 16자 이내
+- 제목에 괄호, 태그, 해시태그, 접미사("(댓글)" 같은 것) 절대 넣지 마
+
+Output ONLY valid JSON:
+{{
+    "titles": [
+        {{"title": "제목1", "hook": "왜 효과적인지 한 줄"}},
+        {{"title": "제목2", "hook": "왜 효과적인지 한 줄"}},
+        {{"title": "제목3", "hook": "왜 효과적인지 한 줄"}},
+        {{"title": "제목4", "hook": "왜 효과적인지 한 줄"}}
+    ]
+}}"""
+    response = client.models.generate_content(
+        model=settings.GEMINI_TEXT_MODEL,
+        contents=prompt,
+        config=genai.types.GenerateContentConfig(temperature=0.9),
+    )
+    result = _parse_gemini_json(response.text)
+    if "titles" not in result or len(result["titles"]) < 2:
+        raise ValueError("Gemini 응답에 titles가 부족합니다")
+    return result
+
+
 # ──────────────────────────────────────────────
 # Step 3: 나레이션 생성
 # ──────────────────────────────────────────────
@@ -185,6 +237,9 @@ async def generate_narration(
     선택된 제목 기반으로 나레이션 생성.
     반환: {"lines": [{"text": "...", "role": "hook"}, ...]}
     """
+    if category == "cosmetics" and content_type == "promo_comment":
+        return await _generate_narration_promo_comment(topic, selected_title, api_key)
+
     client = get_client(api_key)
     category_context = _build_category_context(category, pain_point, ingredient, content_type, keyword)
     if keyword:
@@ -199,7 +254,7 @@ async def generate_narration(
                     f"- Line 3~5에서 '{keyword}'를 중심으로 설명하세요.\n"
                 )
             line_instructions += (
-                "- 제품명·브랜드명 언급 금지.\n"
+                "- 순수 정보 전달. 구매 권유 금지.\n"
                 "- Line 6(CTA): 정보 마무리 (블로그·구매 유도 금지).\n"
             )
         else:  # promo
@@ -211,10 +266,11 @@ async def generate_narration(
             if ingredient:
                 line_instructions += (
                     f"- Line 3~5에서 반드시 '{ingredient}' 성분이 "
-                    f"왜 효과적인지 설명하세요.\n"
+                    f"왜 효과적인지 설명하세요. 이때 '{ingredient}'를 "
+                    f"'작은 입자', '좋은 성분' 같은 추상 개념으로 희석하지 말고 "
+                    f"단어 그대로 최소 한 번은 등장시키세요.\n"
                 )
             line_instructions += (
-                "- 제품명은 절대 말하지 마세요. 성분·역할 중심.\n"
                 "- Line 6(CTA): '자세한 건 블로그에서', '더보기 눌러 확인' 등 "
                 "블로그 유입 유도.\n"
             )
@@ -277,7 +333,63 @@ Output ONLY valid JSON:
                 i + 1, clean_len, text,
             )
 
+    # 키워드 반영 경고 (운영 품질 지표)
+    joined = " ".join(line.get("text", "") for line in result["lines"])
+    if pain_point:
+        pain_tokens = [t.strip() for t in pain_point.split(",") if t.strip()]
+        if pain_tokens and not any(t in joined for t in pain_tokens):
+            logger.warning("나레이션에 pain_point 미반영: %s", pain_point)
+    if ingredient:
+        ingredient_head = ingredient.split()[0] if ingredient.split() else ingredient
+        if ingredient_head and ingredient_head not in joined:
+            logger.warning("나레이션에 ingredient 미반영: %s", ingredient)
+
     return result
+
+
+async def _generate_narration_promo_comment(
+    topic: str,
+    selected_title: str,  # unused — 시그니처 유지
+    api_key: str = None,
+) -> dict:
+    """화장품 '홍보성·고정댓글 유도형' 나레이션 — Structured Output 방식.
+
+    프롬프트는 JSON 지시 없이 자유 산문으로 요청하고, SDK의 response_schema로
+    JSON 구조를 강제한다. 이 구조가 Gemini Web UI와 동일한 입력 조건을 재현해
+    본연의 창작 품질을 확보한다. role 필드는 서버가 인덱스 기준 사후 할당.
+    """
+    client = get_client(api_key)
+    template = _load_promo_comment_template()
+    prompt = template.replace("{{TOPIC}}", topic)
+
+    response = client.models.generate_content(
+        model=settings.GEMINI_TEXT_MODEL,
+        contents=prompt,
+        config=genai.types.GenerateContentConfig(
+            temperature=0.9,
+            response_mime_type="application/json",
+            response_schema=_PromoCommentNarration,
+        ),
+    )
+
+    # response.parsed 우선 사용 (SDK가 Pydantic 인스턴스로 변환), 실패 시 텍스트 파싱 폴백
+    parsed = getattr(response, "parsed", None)
+    if parsed is not None:
+        lines_data = [{"text": line.text} for line in parsed.lines]
+    else:
+        result = _parse_gemini_json(response.text)
+        raw_lines = result.get("lines") or []
+        lines_data = [{"text": l.get("text", "")} for l in raw_lines]
+
+    if len(lines_data) != 5:
+        raise ValueError(f"promo_comment 나레이션은 5줄이어야 합니다 (실제: {len(lines_data)}줄)")
+
+    # role 필드를 서버에서 인덱스 기준 할당 (다운스트림 파이프라인 호환)
+    role_labels = ["line1", "line2", "line3", "line4", "cta"]
+    for i, line in enumerate(lines_data):
+        line["role"] = role_labels[i]
+
+    return {"lines": lines_data}
 
 
 # ──────────────────────────────────────────────
@@ -319,7 +431,7 @@ PRODUCT-HERO shot, NOT a person shot:
 EXCEPTION: This line is exempt from the "never use the same distance as
 previous line" rule above. Use CLOSE-UP or MEDIUM regardless of line 5's distance.
 """
-    elif content_type == "info":
+    elif content_type in ("info", "promo_comment"):
         cta_guide = """
 [CTA LINE GUIDE — INFO CLOSURE]
 The LAST line closes the topic naturally with an informational wrap-up.

@@ -89,19 +89,22 @@ function toggleCategoryFields() {
     toggleContentType();
 }
 
-// ── 영상 목적(정보성/홍보성) 토글 — 화장품 카테고리에서만 의미 있음 ──
+// ── 영상 목적(정보성/홍보성/홍보성·고정댓글) 토글 — 화장품 카테고리에서만 의미 있음 ──
 function toggleContentType() {
     const category = document.getElementById('category').value;
     if (category !== 'cosmetics') return;
-    const isPromo = document.getElementById('content-type').value === 'promo';
-    // 홍보성 전용 필드
-    ['painpoint-field', 'ingredient-field', 'product-templates'].forEach(id => {
+    const ct = document.getElementById('content-type').value;
+    const show = (id, cond) => {
         const el = document.getElementById(id);
-        if (el) el.style.display = isPromo ? '' : 'none';
-    });
-    // 정보성 전용 필드
-    const infoKw = document.getElementById('info-keyword-field');
-    if (infoKw) infoKw.style.display = isPromo ? 'none' : '';
+        if (el) el.style.display = cond ? '' : 'none';
+    };
+    // 홍보성 전용 필드 (pain_point, ingredient)
+    show('painpoint-field', ct === 'promo');
+    show('ingredient-field', ct === 'promo');
+    // 제품 이미지: 홍보성은 필수, 홍보성·고정댓글은 선택(옵션). 정보성은 숨김.
+    show('product-templates', ct === 'promo' || ct === 'promo_comment');
+    // 정보성 전용 필드 (keyword)
+    show('info-keyword-field', ct === 'info');
 }
 
 // ──────────────────────────────────
@@ -272,6 +275,7 @@ function getCategoryPayload() {
             const keyword = document.getElementById('info-keyword').value.trim();
             if (keyword) payload.keyword = keyword;
         }
+        // promo_comment: 주제 외 추가 필드 없음
     }
     return payload;
 }
@@ -378,11 +382,13 @@ async function generateNarration() {
 
     try {
         const topic = document.getElementById('topic').value.trim();
+        const catPayload = getCategoryPayload();
+        const isPromoComment = catPayload.category === 'cosmetics' && catPayload.content_type === 'promo_comment';
         const payload = {
             topic,
             selected_title: selectedTitle,
-            num_lines: 6,
-            ...getCategoryPayload(),
+            num_lines: isPromoComment ? 5 : 6,
+            ...catPayload,
         };
 
         const resp = await authFetch('/api/generate/narration', {
@@ -413,19 +419,27 @@ function displayNarration(data) {
     const roleLabels = {
         hook: 'Hook', problem: '문제', insight: '핵심',
         solution1: '해결 1', solution2: '해결 2', cta: 'CTA',
+        line1: '1', line2: '2', line3: '3', line4: '4',
     };
+
+    const isPromoComment = (
+        document.getElementById('category')?.value === 'cosmetics' &&
+        document.getElementById('content-type')?.value === 'promo_comment'
+    );
 
     const container = document.getElementById('narration-lines');
     container.innerHTML = data.lines.map((line, i) => {
         const charCount = line.text.replace(/[?,!.~…]/g, '').length;
-        // 22자 이상: 회색 주의, 28자 초과: 빨간 경고
         const overClass = charCount > 28 ? 'over' : '';
+        const charBadge = isPromoComment
+            ? ''
+            : `<span class="char-count ${overClass}">${charCount}/28</span>`;
         return `
         <div class="narration-line">
             <div class="line-header">
                 <span class="line-num">${i + 1}</span>
                 <span class="narration-role">${roleLabels[line.role] || line.role}</span>
-                <span class="char-count ${overClass}">${charCount}/28</span>
+                ${charBadge}
             </div>
             <input type="text" class="line-text" value="${escapeHtml(line.text)}"
                    data-index="${i}" oninput="updateCharCount(this)">
@@ -436,6 +450,7 @@ function displayNarration(data) {
 function updateCharCount(input) {
     const count = input.value.replace(/[?,!.~…]/g, '').length;
     const counter = input.parentElement.querySelector('.char-count');
+    if (!counter) return;
     counter.textContent = `${count}/28`;
     counter.classList.toggle('over', count > 28);
 }
