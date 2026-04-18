@@ -1,8 +1,36 @@
-storage/
+# Python
 __pycache__/
 *.pyc
-.env
 *.egg-info/
-.DS_Store
-.claude/
+venv/
+.venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 환경변수 / 시크릿
+.env
+
+# 런타임 산출물
+storage/
 bgm/
+*.log
+
+# 에디터 / IDE
+.claude/
+.vscode/
+.idea/
+*.swp
+*.bak
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 외부 도구 잔여물
+.playwright-mcp/
+gh.zip
+gh_cli/
