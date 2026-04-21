@@ -717,11 +717,25 @@ function buildConfirmSummary() {
     const summaryEl = document.getElementById('confirm-summary');
     const createBtn = document.querySelector('#step-confirm .btn-primary');
 
+    // promo_comment는 이미지 프롬프트 생성을 최종 확인 시점에 수행하므로
+    // scriptData가 아직 null이어도 '나레이션 확정' 자체는 끝났을 수 있다.
+    // → 나레이션 확정 여부는 _approvedNarrationLines 기반으로 판정.
+    const categoryVal = document.getElementById('category').value;
+    const contentTypeVal = categoryVal === 'cosmetics'
+        ? document.getElementById('content-type').value
+        : null;
+    const isPromoComment = contentTypeVal === 'promo_comment';
+    const narrationApproved = isPromoComment
+        ? !!(window._approvedNarrationLines && window._approvedNarrationLines.length > 0)
+        : !!scriptData;
+    const ttsReady = !isPromoComment || !!window._ttsSessionId;
+
     // 필수 단계 검사
     const missing = [];
     if (!document.getElementById('topic').value.trim()) missing.push({ idx: 0, name: '주제 입력' });
     if (!selectedTitle) missing.push({ idx: 1, name: '제목 선택' });
-    if (!scriptData) missing.push({ idx: 2, name: '나레이션 확정' });
+    if (!narrationApproved) missing.push({ idx: 2, name: '나레이션 확정' });
+    if (!ttsReady) missing.push({ idx: 3, name: '나레이션 음성 만들기' });
 
     if (missing.length > 0) {
         const items = missing.map(m =>
