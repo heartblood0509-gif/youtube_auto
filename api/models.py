@@ -126,6 +126,20 @@ class JobCreateRequest(BaseModel):
     bgm_filename: Optional[str] = None
     bgm_start_sec: float = Field(default=0.0, ge=0.0)
     product_image_id: Optional[str] = None
+    # 음성 단계에서 사전 생성된 TTS 세션 ID (있으면 영상 조립 시 재사용)
+    tts_session_id: Optional[str] = None
+
+
+class TtsPreviewBuildRequest(BaseModel):
+    """음성 설정 단계에서 TTS를 미리 생성해 세션에 저장하는 요청."""
+    sentences: list[str]
+    voice_id: str
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    emotion: Optional[str] = None
+    # 아래는 커밋 5의 6초 초과 분리에서 사용 (현재는 무시)
+    content_type: Optional[str] = None
+    topic: Optional[str] = None
+    style: Optional[str] = None
 
 
 # ── 제품 이미지 ──

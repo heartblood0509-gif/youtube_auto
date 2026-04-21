@@ -56,6 +56,7 @@ _MIGRATIONS = {
         "r2_synced": "VARCHAR DEFAULT 'none'",
         "files_expired_at": "TIMESTAMP",
         "product_image_id": "VARCHAR",
+        "tts_session_id": "VARCHAR",
     },
     "users": {
         "gemini_api_key_enc": "VARCHAR",

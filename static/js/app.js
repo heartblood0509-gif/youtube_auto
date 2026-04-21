@@ -613,7 +613,63 @@ document.getElementById('voice-preview-btn').addEventListener('click', async fun
 // ──────────────────────────────────
 // Step 5: BGM 설정
 // ──────────────────────────────────
-function confirmTtsSettings() {
+async function confirmTtsSettings() {
+    // 음성 설정 화면에서 "나레이션 음성 만들기" 버튼 클릭 시.
+    // promo_comment(화장품 홍보·고정댓글 유도형)만 현재 단계에서 TTS를 미리 생성.
+    // 그 외 타입은 기존처럼 영상 조립 시 한꺼번에 TTS 생성.
+    const category = document.getElementById('category').value;
+    const contentType = category === 'cosmetics'
+        ? document.getElementById('content-type').value
+        : null;
+    const isPromoComment = contentType === 'promo_comment';
+
+    if (isPromoComment) {
+        const narrationLines = window._approvedNarrationLines;
+        if (!narrationLines || narrationLines.length === 0) {
+            alert('먼저 나레이션을 확정해주세요');
+            return;
+        }
+
+        const voiceId = document.getElementById('tts-voice').value;
+        const speed = parseFloat(document.getElementById('tts-speed').value);
+        const emotion = document.getElementById('tts-emotion').value;
+
+        // 로딩 UX: 단계별 메시지 (Typecast 병렬 처리라 대체로 5~10초)
+        showLoading('음성 생성 중... (1/2)');
+        const loadingTimer = setTimeout(() => {
+            showLoading('나레이션 길이 확인 중... (2/2)');
+        }, 3000);
+
+        try {
+            const resp = await authFetch('/api/tts/preview-build', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sentences: narrationLines,
+                    voice_id: voiceId,
+                    speed: speed,
+                    emotion: emotion,
+                    content_type: contentType,
+                    topic: document.getElementById('topic').value.trim(),
+                    style: 'realistic',
+                }),
+            });
+            clearTimeout(loadingTimer);
+            if (!resp.ok) {
+                const err = await resp.json();
+                throw new Error(err.detail || 'TTS 생성 실패');
+            }
+            const data = await resp.json();
+            window._ttsSessionId = data.session_id;
+        } catch (e) {
+            clearTimeout(loadingTimer);
+            hideLoading();
+            showFriendlyError(e.message);
+            return;
+        }
+        hideLoading();
+    }
+
     advanceToStep(4);
     if (bgmList.length === 0) loadBgmList();
 }
@@ -723,6 +779,7 @@ async function createJob() {
         bgm_filename: selectedBgm || null,
         bgm_start_sec: parseFloat(document.getElementById('bgm-start-sec').value) || 0,
         product_image_id: productImageId,
+        tts_session_id: window._ttsSessionId || null,
     };
 
     showLoading('작업 등록 중...');

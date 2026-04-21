@@ -107,6 +107,18 @@ async def create_job(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"제품 이미지 준비 실패: {e}")
 
+    # TTS 세션 존재 확인 (미리 생성된 TTS 재사용 경로)
+    tts_session_dir = None
+    if request.tts_session_id:
+        tts_session_dir = os.path.join(
+            settings.STORAGE_DIR, "tts_sessions", request.tts_session_id
+        )
+        if not os.path.exists(tts_session_dir):
+            raise HTTPException(
+                status_code=400,
+                detail="TTS 세션을 찾을 수 없습니다. 음성 설정 단계에서 다시 생성해주세요.",
+            )
+
     job = Job(
         id=job_id,
         user_id=_user.id,
@@ -127,6 +139,7 @@ async def create_job(
         bgm_volume=request.bgm_volume,
         bgm_filename=request.bgm_filename,
         bgm_start_sec=request.bgm_start_sec,
+        tts_session_id=request.tts_session_id,
         status="pending",
         current_step="작업 대기 중...",
     )
@@ -138,6 +151,22 @@ async def create_job(
     job_dir = os.path.join(settings.STORAGE_DIR, job.id)
     for sub in ["images", "clips", "tts", "temp", "output"]:
         os.makedirs(os.path.join(job_dir, sub), exist_ok=True)
+
+    # TTS 세션 파일을 job_dir/tts/로 이동 (있으면)
+    if tts_session_dir:
+        try:
+            for fname in os.listdir(tts_session_dir):
+                shutil.move(
+                    os.path.join(tts_session_dir, fname),
+                    os.path.join(job_dir, "tts", fname),
+                )
+            os.rmdir(tts_session_dir)
+        except Exception as e:
+            # 이동 실패는 치명적이지 않음 — 영상 조립 시 TTS 재생성 경로가 살아있음
+            # 다만 tts_session_id가 DB에 남아있으면 worker가 오판 가능 → 지우기
+            job.tts_session_id = None
+            db.commit()
+            print(f"[create_job] TTS 세션 이동 실패, 재생성 경로로 폴백: {e}")
 
     # 백그라운드에서 이미지 생성 시작
     background_tasks.add_task(_generate_images_task, job.id)

@@ -203,6 +203,9 @@ async def render_video_for_job(job_id: str):
 
         keys = resolve_user_api_keys(db, job.user_id)
 
+        # 음성 단계에서 미리 생성한 TTS가 있으면 재사용
+        prebuilt_tts = bool(getattr(job, "tts_session_id", None))
+
         config = {
             "job_dir": job_dir,
             "images": images,
@@ -216,6 +219,7 @@ async def render_video_for_job(job_id: str):
             "tts_speed": job.tts_speed,
             "voice_id": job.voice_id,
             "emotion": job.emotion,
+            "prebuilt_tts": prebuilt_tts,
             "bgm_path": bgm_path,
             "bgm_volume": job.bgm_volume,
             "bgm_start_sec": job.bgm_start_sec or 0.0,

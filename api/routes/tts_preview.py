@@ -1,7 +1,9 @@
 """TTS 음성 미리듣기 엔드포인트"""
 
+import json
 import os
 import re
+import uuid
 
 from fastapi import APIRouter, Query, HTTPException, Depends
 from fastapi.responses import FileResponse
@@ -12,10 +14,13 @@ from sqlalchemy.orm import Session
 from config import settings
 from core.tts_engines import generate_tts_typecast
 from api.deps import get_approved_user, resolve_user_api_keys
+from api.models import TtsPreviewBuildRequest
 from db.database import get_db
 from db.models import User
 
 router = APIRouter(prefix="/api/tts", tags=["tts"])
+
+TTS_SESSIONS_DIR = os.path.join(settings.STORAGE_DIR, "tts_sessions")
 
 PREVIEW_DIR = os.path.join(settings.STORAGE_DIR, "tts_preview")
 SAMPLE_TEXT = "안녕하세요, 반갑습니다."
@@ -140,3 +145,63 @@ async def tts_preview(
 
     media_type = "audio/mpeg" if cached.endswith(".mp3") else "audio/wav"
     return FileResponse(cached, media_type=media_type)
+
+
+# ──────────────────────────────────────────────────────────────
+# /api/tts/preview-build — 음성 설정 단계에서 실제 TTS 생성
+# ──────────────────────────────────────────────────────────────
+# 목적: "나레이션 음성 만들기" 버튼 클릭 시 호출돼 각 줄의 TTS를 미리 생성.
+# 결과 파일은 storage/tts_sessions/{session_id}/ 에 sent_XX.wav 로 저장되며,
+# 이후 Job 생성 시 job_dir/tts/ 로 이동돼 영상 조립에서 재사용된다(재생성 스킵).
+# 커밋 5에서 promo_comment 한정 6초 초과 자동 분리가 이 엔드포인트에 통합될 예정.
+
+@router.post("/preview-build")
+async def preview_build(
+    req: TtsPreviewBuildRequest,
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_approved_user),
+):
+    if not req.sentences:
+        raise HTTPException(400, "sentences가 비어있습니다")
+
+    keys = resolve_user_api_keys(db, _user.id)
+    session_id = uuid.uuid4().hex[:12]
+    session_dir = os.path.join(TTS_SESSIONS_DIR, session_id)
+    os.makedirs(session_dir, exist_ok=True)
+
+    emotion = req.emotion if req.emotion and req.emotion != "normal" else None
+
+    try:
+        raw_timings = await generate_tts_typecast(
+            session_dir,
+            req.sentences,
+            voice_id=req.voice_id,
+            speed=req.speed,
+            emotion=emotion,
+            api_key=keys["typecast"],
+        )
+    except Exception as e:
+        # 실패 시 세션 디렉토리 정리
+        import shutil
+        shutil.rmtree(session_dir, ignore_errors=True)
+        raise HTTPException(500, f"TTS 생성 실패: {e}")
+
+    durations = [t["duration"] for t in raw_timings]
+
+    # 세션 메타 저장 (Job 생성 시 사용, 24h GC 대상)
+    metadata = {
+        "voice_id": req.voice_id,
+        "speed": req.speed,
+        "emotion": req.emotion,
+        "sentences": req.sentences,
+        "durations": durations,
+        "content_type": req.content_type,
+    }
+    with open(os.path.join(session_dir, "metadata.json"), "w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+    return {
+        "session_id": session_id,
+        "lines_count": len(req.sentences),
+        "durations": durations,
+    }

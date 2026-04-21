@@ -75,6 +75,9 @@ class Job(Base):
     bgm_filename = Column(String, nullable=True)
     bgm_start_sec = Column(Float, default=0.0)
 
+    # 음성 단계에서 사전 생성한 TTS 세션 ID (있으면 영상 조립 시 재사용)
+    tts_session_id = Column(String, nullable=True)
+
     # 출력
     video_path = Column(String, nullable=True)
     error_message = Column(Text, nullable=True)
