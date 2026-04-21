@@ -225,7 +225,15 @@ async def assemble_shorts(job_id: str, config: dict, progress_callback=None):
     sub_y = sq_y + sq - 200
 
     def _escape_filter(text):
-        return text.replace("'", "'\\''").replace(",", "\\,").replace(":", "\\:")
+        # ffmpeg drawtext text= 옵션에서 특수 해석되는 문자들 이스케이프.
+        # %는 %{function} 변수 치환의 시작 문자라 자막에 포함되면 그 자막 전체가
+        # 렌더링 실패한다. 백슬래시로 이스케이프 + drawtext에 expansion=none도 병행.
+        return (
+            text.replace("'", "'\\''")
+                .replace(",", "\\,")
+                .replace(":", "\\:")
+                .replace("%", "\\%")
+        )
 
     def _escape_fontpath(path):
         """Windows 드라이브 콜론(C:)을 ffmpeg 필터용으로 이스케이프"""
@@ -235,7 +243,7 @@ async def assemble_shorts(job_id: str, config: dict, progress_callback=None):
     for start, end, text in subtitles:
         escaped = _escape_filter(text)
         sub_filters.append(
-            f"drawtext=fontfile='{_escape_fontpath(font_sub)}':text='{escaped}':"
+            f"drawtext=expansion=none:fontfile='{_escape_fontpath(font_sub)}':text='{escaped}':"
             f"fontsize=55:fontcolor=white:borderw=3:bordercolor=black:"
             f"x=(w-text_w)/2:y={sub_y}:"
             f"enable='between(t,{start},{end})'"
@@ -263,13 +271,13 @@ async def assemble_shorts(job_id: str, config: dict, progress_callback=None):
             line_color = title_colors[min(j, len(title_colors) - 1)]
             # 그림자 레이어 (검정, 살짝 오프셋)
             title_filters.append(
-                f"drawtext=fontfile='{font_path_escaped}':text='{escaped}':"
+                f"drawtext=expansion=none:fontfile='{font_path_escaped}':text='{escaped}':"
                 f"fontsize={title_fontsize}:fontcolor=black@0.5:"
                 f"x=(w-text_w)/2+6:y={ty}+6"
             )
             # 본문 레이어 (테두리 + 색상)
             title_filters.append(
-                f"drawtext=fontfile='{font_path_escaped}':text='{escaped}':"
+                f"drawtext=expansion=none:fontfile='{font_path_escaped}':text='{escaped}':"
                 f"fontsize={title_fontsize}:fontcolor={line_color}:"
                 f"borderw=4:bordercolor=black@0.8:"
                 f"x=(w-text_w)/2:y={ty}"
