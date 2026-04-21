@@ -59,17 +59,26 @@ async def assemble_shorts(job_id: str, config: dict, progress_callback=None):
     images = config["images"]
     motions = [line["motion"] for line in config["lines"]]
 
-    # ── Step 1: TTS 생성 ──
-    _update(progress_callback, job_id, "generating_tts", 0.4, "TTS 나레이션 생성 중...")
-
+    # ── Step 1: TTS 준비 ──
+    # prebuilt_tts=True면 tts_dir에 이미 sent_XX.wav + timings_raw.json 있다고 가정.
+    # 그 외엔 Typecast API 호출해 신규 생성.
+    prebuilt_tts = config.get("prebuilt_tts", False)
     tts_speed = config.get("tts_speed", 1.1)
     voice_id = config.get("voice_id")
     emotion = config.get("emotion")
 
-    tc_api_key = config.get("typecast_api_key")
-    await asyncio.to_thread(
-        generate_tts_typecast, tts_dir, sentences, voice_id=voice_id, speed=tts_speed, emotion=emotion, api_key=tc_api_key
-    )
+    if prebuilt_tts:
+        _update(progress_callback, job_id, "generating_tts", 0.4, "사전 생성된 TTS 사용")
+        timings_path = os.path.join(tts_dir, "timings_raw.json")
+        if not os.path.exists(timings_path):
+            raise RuntimeError(f"prebuilt_tts 활성인데 timings_raw.json 없음: {timings_path}")
+    else:
+        _update(progress_callback, job_id, "generating_tts", 0.4, "TTS 나레이션 생성 중...")
+        tc_api_key = config.get("typecast_api_key")
+        await asyncio.to_thread(
+            generate_tts_typecast, tts_dir, sentences, voice_id=voice_id, speed=tts_speed, emotion=emotion, api_key=tc_api_key
+        )
+
     sentence_durations = [
         t["duration"] for t in json.loads(
             open(os.path.join(tts_dir, "timings_raw.json"), encoding="utf-8").read()
