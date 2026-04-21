@@ -1,8 +1,10 @@
 """TTS 음성 미리듣기 엔드포인트"""
 
+import asyncio
 import json
 import os
 import re
+import shutil
 import uuid
 
 from fastapi import APIRouter, Query, HTTPException, Depends
@@ -13,6 +15,16 @@ import requests as http_requests
 from sqlalchemy.orm import Session
 from config import settings
 from core.tts_engines import generate_tts_typecast
+from core.line_splitter import (
+    detect_overlong_lines,
+    split_long_line_with_gemini,
+    split_by_punctuation,
+)
+from core.audio_splitter import (
+    calculate_split_point,
+    cut_wav_at,
+    get_wav_duration,
+)
 from api.deps import get_approved_user, resolve_user_api_keys
 from api.models import TtsPreviewBuildRequest
 from db.database import get_db
@@ -21,6 +33,7 @@ from db.models import User
 router = APIRouter(prefix="/api/tts", tags=["tts"])
 
 TTS_SESSIONS_DIR = os.path.join(settings.STORAGE_DIR, "tts_sessions")
+LINE_DURATION_THRESHOLD = 6.0  # veo 3.1 lite 클립당 6초 고정 제약
 
 PREVIEW_DIR = os.path.join(settings.STORAGE_DIR, "tts_preview")
 SAMPLE_TEXT = "안녕하세요, 반갑습니다."
@@ -189,14 +202,47 @@ async def preview_build(
         raise HTTPException(500, f"TTS 생성 실패: {e}")
 
     durations = [t["duration"] for t in raw_timings]
+    expanded_sentences = list(req.sentences)
+    split_from_map: dict[int, int] = {}  # 새 인덱스 → 원본 인덱스 (분리 추적용)
+
+    # promo_comment 전용: 6초 초과 줄 자동 분리 + wav 파일 재배치
+    if req.content_type == "promo_comment":
+        overlong = detect_overlong_lines(durations, LINE_DURATION_THRESHOLD)
+        if overlong:
+            try:
+                expanded_sentences, durations, split_from_map = await _split_overlong_lines(
+                    session_dir=session_dir,
+                    sentences=req.sentences,
+                    durations=durations,
+                    overlong_indices=overlong,
+                    topic=req.topic or "",
+                    style=req.style or "realistic",
+                    gemini_api_key=keys["gemini"],
+                )
+            except Exception as e:
+                import traceback
+                print(f"[preview-build] 분리 실패 session={session_id} err={e}")
+                traceback.print_exc()
+                # 분리 실패는 TTS 생성 자체의 실패가 아니므로 세션은 유지
+                # (원본 5줄로라도 진행 — 6초 초과 줄은 영상에서 잘릴 뿐)
+
+    # timings_raw.json 재생성 (기존 파일 덮어쓰기) — 조립기가 이 파일을 읽음
+    raw_timings_out = [
+        {"text": s, "duration": d}
+        for s, d in zip(expanded_sentences, durations)
+    ]
+    with open(os.path.join(session_dir, "timings_raw.json"), "w", encoding="utf-8") as f:
+        json.dump(raw_timings_out, f, ensure_ascii=False, indent=2)
 
     # 세션 메타 저장 (Job 생성 시 사용, 24h GC 대상)
     metadata = {
         "voice_id": req.voice_id,
         "speed": req.speed,
         "emotion": req.emotion,
-        "sentences": req.sentences,
+        "original_sentences": list(req.sentences),
+        "expanded_sentences": expanded_sentences,
         "durations": durations,
+        "split_from_map": split_from_map,  # 빈 dict면 분리 없음
         "content_type": req.content_type,
     }
     with open(os.path.join(session_dir, "metadata.json"), "w", encoding="utf-8") as f:
@@ -204,6 +250,81 @@ async def preview_build(
 
     return {
         "session_id": session_id,
-        "lines_count": len(req.sentences),
+        "lines_count": len(expanded_sentences),
         "durations": durations,
+        "split_count": len(split_from_map),
+        "expanded_sentences": expanded_sentences,
     }
+
+
+async def _split_overlong_lines(
+    session_dir: str,
+    sentences: list[str],
+    durations: list[float],
+    overlong_indices: list[int],
+    topic: str,
+    style: str,
+    gemini_api_key: str | None,
+) -> tuple[list[str], list[float], dict[int, int]]:
+    """6초 초과 줄을 Gemini(1순위) 또는 구두점(폴백)으로 2분할하고
+    세션 디렉토리의 sent_XX.wav 파일들을 재배치.
+
+    반환: (확장된 sentences, 확장된 durations, {새 인덱스: 원본 인덱스} 매핑)
+    """
+    # 1) 각 초과 줄의 분리 텍스트 계산
+    split_texts: dict[int, list[str]] = {}
+    for idx in overlong_indices:
+        parts = await split_long_line_with_gemini(
+            sentences[idx], topic, style, api_key=gemini_api_key
+        )
+        if parts is None:
+            parts = split_by_punctuation(sentences[idx])
+        split_texts[idx] = parts
+
+    # 2) 임시 디렉토리에 재번호 매긴 wav 생성 후 세션 디렉토리로 이동
+    temp_dir = os.path.join(session_dir, "_split_temp")
+    os.makedirs(temp_dir, exist_ok=True)
+
+    expanded_sentences: list[str] = []
+    expanded_durations: list[float] = []
+    split_from_map: dict[int, int] = {}
+
+    new_idx = 0
+    for orig_idx, sent in enumerate(sentences):
+        src_wav = os.path.join(session_dir, f"sent_{orig_idx:02d}.wav")
+        if orig_idx in split_texts:
+            parts = split_texts[orig_idx]
+            # 분할 시각 계산 (음절 비율 + 침묵 감지 보정)
+            cut_sec = await asyncio.to_thread(
+                calculate_split_point, src_wav, parts[0], parts[1]
+            )
+            out_a = os.path.join(temp_dir, f"sent_{new_idx:02d}.wav")
+            out_b = os.path.join(temp_dir, f"sent_{new_idx + 1:02d}.wav")
+            await asyncio.to_thread(cut_wav_at, src_wav, cut_sec, out_a, out_b)
+            dur_a = await asyncio.to_thread(get_wav_duration, out_a)
+            dur_b = await asyncio.to_thread(get_wav_duration, out_b)
+
+            expanded_sentences.extend(parts)
+            expanded_durations.extend([round(dur_a, 2), round(dur_b, 2)])
+            split_from_map[new_idx] = orig_idx
+            split_from_map[new_idx + 1] = orig_idx
+            new_idx += 2
+        else:
+            out = os.path.join(temp_dir, f"sent_{new_idx:02d}.wav")
+            shutil.copy(src_wav, out)
+            expanded_sentences.append(sent)
+            expanded_durations.append(durations[orig_idx])
+            new_idx += 1
+
+    # 3) 원본 sent_XX.wav 삭제 후 temp 파일들을 세션 디렉토리로 이동
+    for orig_idx in range(len(sentences)):
+        orig = os.path.join(session_dir, f"sent_{orig_idx:02d}.wav")
+        if os.path.exists(orig):
+            os.remove(orig)
+    for i in range(new_idx):
+        src = os.path.join(temp_dir, f"sent_{i:02d}.wav")
+        dst = os.path.join(session_dir, f"sent_{i:02d}.wav")
+        shutil.move(src, dst)
+    shutil.rmtree(temp_dir, ignore_errors=True)
+
+    return expanded_sentences, expanded_durations, split_from_map
