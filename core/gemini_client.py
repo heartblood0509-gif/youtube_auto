@@ -566,25 +566,56 @@ Image style: {style_desc}
 
 {output_format}"""
 
-    response = client.models.generate_content(
-        model=settings.GEMINI_TEXT_MODEL,
-        contents=prompt,
-        config=genai.types.GenerateContentConfig(
-            temperature=0.7,
-            response_mime_type="application/json",
-        ),
-    )
-    result = _parse_gemini_json(response.text)
+    import asyncio as _asyncio
 
-    if "lines" not in result:
-        raise ValueError("Gemini 응답에 lines가 없습니다")
-    for line in result["lines"]:
-        if line.get("motion") not in MOTION_TYPES:
-            line["motion"] = "zoom_in"
-        analysis = line.pop("symptom_analysis", None)
-        if analysis:
-            logger.info("증상 분석: %s → %s", analysis, line.get("image_prompt", "")[:60])
-    return result
+    last_err = None
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model=settings.GEMINI_TEXT_MODEL,
+                contents=prompt,
+                config=genai.types.GenerateContentConfig(
+                    temperature=0.7,
+                    response_mime_type="application/json",
+                ),
+            )
+            result = _parse_gemini_json(response.text)
+
+            # 관대한 파싱: Gemini가 가끔 lines 키 없이 배열을 바로 주거나
+            # 다른 키로 감싸서 주는 현상을 복구한다.
+            if "lines" not in result:
+                if isinstance(result, list):
+                    result = {"lines": result}
+                elif isinstance(result, dict):
+                    list_values = [v for v in result.values() if isinstance(v, list)]
+                    if len(list_values) == 1:
+                        result = {"lines": list_values[0]}
+                    else:
+                        raise ValueError(
+                            f"Gemini 응답 구조 불일치 (lines 키 없음, 배열 후보 {len(list_values)}개)"
+                        )
+                else:
+                    raise ValueError(f"Gemini 응답이 dict/list가 아님: {type(result).__name__}")
+
+            if not isinstance(result.get("lines"), list) or len(result["lines"]) == 0:
+                raise ValueError("lines가 비어있거나 배열이 아님")
+
+            for line in result["lines"]:
+                if line.get("motion") not in MOTION_TYPES:
+                    line["motion"] = "zoom_in"
+                analysis = line.pop("symptom_analysis", None)
+                if analysis:
+                    logger.info("증상 분석: %s → %s", analysis, line.get("image_prompt", "")[:60])
+            return result
+        except Exception as e:
+            last_err = e
+            logger.warning(
+                "[generate_image_prompts] 시도 %d/3 실패: %s", attempt + 1, e
+            )
+            if attempt < 2:
+                await _asyncio.sleep(1.5 ** attempt)
+
+    raise ValueError(f"Gemini 이미지 프롬프트 생성 3회 모두 실패: {last_err}")
 
 
 # ──────────────────────────────────────────────
