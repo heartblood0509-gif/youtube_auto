@@ -1,8 +1,8 @@
 /**
  * 메인 페이지 - 멀티스텝 대본 생성
  * Step 1: 주제 설정 → Step 2: 제목 선택 → Step 3: 나레이션 확인
- * → Step 4: 이미지 스타일 → Step 5: 음성 설정 → Step 6: BGM 설정
- * → Step 7: 최종 확인 → Job 생성
+ * → Step 4: 음성 설정 → Step 5: BGM 설정 → Step 6: 최종 확인 → Job 생성
+ */
 
 function showFriendlyError(msg) {
     const is503 = msg.includes('503') || msg.includes('UNAVAILABLE');
@@ -17,7 +17,6 @@ function showFriendlyError(msg) {
     }
     alert(userMsg);
 }
- */
 
 // ── TTS 음성 옵션 (엔진별) ──
 const VOICE_OPTIONS = {

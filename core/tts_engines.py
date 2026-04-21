@@ -17,10 +17,15 @@ _TYPECAST_MAX_CONCURRENCY = 3
 
 
 def _generate_one_sentence_typecast(tts_dir, index, sent, headers, vid, model, speed, emotion):
-    """한 문장만 Typecast로 합성하고 sent_XX.wav 저장. duration 반환."""
+    """한 문장만 Typecast로 합성하고 sent_XX.wav 저장. duration 반환.
+
+    실패 지점(HTTP 에러·polling 타임아웃·파일 누락)마다 명확한 RuntimeError를 던져
+    병렬 처리 중 어느 줄이 왜 실패했는지 즉시 추적 가능하게 한다.
+    """
     import requests
     import soundfile as sf
 
+    prefix = f"[Typecast sent_{index:02d}]"
     payload = {
         "text": sent,
         "voice_id": vid,
@@ -33,28 +38,57 @@ def _generate_one_sentence_typecast(tts_dir, index, sent, headers, vid, model, s
         "https://api.typecast.ai/v1/text-to-speech",
         headers=headers,
         json=payload,
+        timeout=60,
     )
     out_path = os.path.join(tts_dir, f"sent_{index:02d}.wav")
+
+    if resp.status_code == 429:
+        raise RuntimeError(f"{prefix} Typecast rate limit (429)")
+    if resp.status_code >= 400:
+        raise RuntimeError(f"{prefix} HTTP {resp.status_code}: {resp.text[:200]}")
 
     content_type = resp.headers.get("Content-Type", "")
     if "audio" in content_type or "octet-stream" in content_type:
         with open(out_path, "wb") as f:
             f.write(resp.content)
     else:
-        result = resp.json()
+        try:
+            result = resp.json()
+        except Exception as e:
+            raise RuntimeError(f"{prefix} 응답 JSON 파싱 실패: {e} / body={resp.text[:200]}")
         speak_url = result.get("result", {}).get("speak_v2_url")
-        if speak_url:
-            for _ in range(30):
-                time.sleep(2)
-                poll = requests.get(speak_url, headers=headers)
-                if poll.status_code == 200:
-                    data = poll.json()
-                    if data.get("result", {}).get("status") == "done":
-                        audio_url = data["result"].get("audio_download_url") or data["result"].get("audio_url")
-                        if audio_url:
-                            with open(out_path, "wb") as f:
-                                f.write(requests.get(audio_url).content)
-                        break
+        if not speak_url:
+            raise RuntimeError(f"{prefix} speak_v2_url 없음 / response={json.dumps(result)[:300]}")
+
+        done = False
+        last_status = None
+        for _ in range(30):
+            time.sleep(2)
+            poll = requests.get(speak_url, headers=headers, timeout=30)
+            if poll.status_code != 200:
+                last_status = f"polling HTTP {poll.status_code}"
+                continue
+            data = poll.json()
+            status = data.get("result", {}).get("status")
+            last_status = status
+            if status == "done":
+                audio_url = data["result"].get("audio_download_url") or data["result"].get("audio_url")
+                if not audio_url:
+                    raise RuntimeError(f"{prefix} status=done인데 audio_url 없음")
+                audio_resp = requests.get(audio_url, timeout=60)
+                if audio_resp.status_code != 200:
+                    raise RuntimeError(f"{prefix} audio 다운로드 HTTP {audio_resp.status_code}")
+                with open(out_path, "wb") as f:
+                    f.write(audio_resp.content)
+                done = True
+                break
+            if status in ("failed", "error"):
+                raise RuntimeError(f"{prefix} Typecast polling status={status} / data={json.dumps(data)[:300]}")
+        if not done:
+            raise RuntimeError(f"{prefix} 60초 polling 타임아웃 (마지막 상태: {last_status})")
+
+    if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+        raise RuntimeError(f"{prefix} wav 파일이 생성되지 않음: {out_path}")
 
     wav, sr = sf.read(out_path)
     duration = len(wav) / sr
