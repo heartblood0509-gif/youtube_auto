@@ -23,6 +23,14 @@ async function loadPreview() {
         previewData = await resp.json();
         document.getElementById('preview-title').textContent = previewData.title;
 
+        // 이미지 개수 + 예상 비용 안내 배너 — 줄 수가 기본 6에서 벗어났을 때 특히 유용
+        const lineCount = previewData.lines.length;
+        const costBanner = document.getElementById('cost-banner');
+        if (costBanner) {
+            updateCostBanner(lineCount, getSelectedVideoMode());
+            costBanner.classList.remove('hidden');
+        }
+
         const grid = document.getElementById('preview-grid');
         grid.innerHTML = previewData.lines.map((line, i) => `
             <div class="preview-card" id="card-${i}">
@@ -296,11 +304,42 @@ function selectVideoMode(card) {
     const grid = card.closest('.style-card-grid');
     grid.querySelectorAll('.style-card').forEach(c => c.classList.remove('selected'));
     card.classList.add('selected');
+    // 선택한 모드에 맞춰 비용 배너 갱신
+    if (previewData) {
+        updateCostBanner(previewData.lines.length, card.dataset.value);
+    }
 }
 
 function getSelectedVideoMode() {
     const selected = document.querySelector('.style-card-grid .style-card.selected');
     return selected ? selected.dataset.value : 'kenburns';
+}
+
+// 6장 기준 단가 (원). 카드 meta 문구와 동일.
+const VIDEO_MODE_COST_PER_6 = {
+    kenburns: 0,
+    hailuo: 900,
+    hailuo23: 1710,
+    wan: 1800,
+    kling26: 3150,
+    kling: 2520,
+    veo: 4500,
+    veo_lite: 1500,
+};
+
+function updateCostBanner(lineCount, videoMode) {
+    const banner = document.getElementById('cost-banner');
+    if (!banner) return;
+    const per6 = VIDEO_MODE_COST_PER_6[videoMode];
+    const unit = typeof per6 === 'number' ? per6 / 6 : null;
+    let msg = `이 영상은 이미지 <b>${lineCount}장</b>으로 구성됩니다.`;
+    if (unit === 0) {
+        msg += ' 영상 생성 비용은 <b>무료</b>(이미지 슬라이드)입니다.';
+    } else if (unit) {
+        const total = Math.round(unit * lineCount);
+        msg += ` 영상 생성 비용은 <b>약 ${total.toLocaleString()}원</b> 예상됩니다.`;
+    }
+    banner.innerHTML = msg;
 }
 
 function escapeHtml(str) {

@@ -473,6 +473,20 @@ async function approveNarration() {
 
     window._approvedNarrationLines = narrationLines;
 
+    // promo_comment는 이미지 프롬프트 생성을 "최종 확인" 단계로 연기한다.
+    // (음성 단계에서 6초 초과 줄이 분리될 수 있어, 분리 반영된 텍스트로
+    //  프롬프트를 만들어야 이미지 컷 수와 영상 클립 수가 일치한다.)
+    const category = document.getElementById('category').value;
+    const contentType = category === 'cosmetics'
+        ? document.getElementById('content-type').value
+        : null;
+    if (contentType === 'promo_comment') {
+        scriptData = null;  // 최종확인 단계에서 expanded 기준으로 재생성
+        advanceToStep(3);
+        updateVoiceOptions();
+        return;
+    }
+
     advanceToStep(3); // 음성 단계로 먼저 이동
     showLoading('이미지 프롬프트 생성 중...');
 
@@ -660,6 +674,8 @@ async function confirmTtsSettings() {
             }
             const data = await resp.json();
             window._ttsSessionId = data.session_id;
+            // 분리 결과 보관 — 최종 확인 단계에서 이미지 프롬프트 생성 시 사용
+            window._expandedSentences = data.expanded_sentences || narrationLines;
         } catch (e) {
             clearTimeout(loadingTimer);
             hideLoading();
@@ -746,8 +762,6 @@ function buildConfirmSummary() {
 // Job 생성
 // ──────────────────────────────────
 async function createJob() {
-    if (!scriptData) return;
-
     // 홍보성 영상만 제품 이미지 필수. 정보성은 product_image_id를 null로 강제해
     // 이전에 선택한 제품이 CTA에 새는 것을 방지한다.
     const category = document.getElementById('category').value;
@@ -761,6 +775,40 @@ async function createJob() {
     const productImageId = (contentType === 'info')
         ? null
         : (window._selectedProductId || null);
+
+    // promo_comment 분기: 이미지 프롬프트를 지금(최종 확인 시점) 생성.
+    // 음성 단계에서 분리된 expanded_sentences 기준으로 호출해야 이미지 컷 수가 일치.
+    if (contentType === 'promo_comment') {
+        const narrationForPrompts = window._expandedSentences || window._approvedNarrationLines;
+        if (!narrationForPrompts || narrationForPrompts.length === 0) {
+            alert('나레이션이 준비되지 않았습니다. 앞 단계부터 다시 진행해주세요.');
+            return;
+        }
+        showLoading('이미지 프롬프트 생성 중...');
+        try {
+            const promptResp = await authFetch('/api/generate/image-prompts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    narration_lines: narrationForPrompts,
+                    style: 'realistic',
+                    topic: document.getElementById('topic').value.trim(),
+                    ...getCategoryPayload(),
+                }),
+            });
+            if (!promptResp.ok) {
+                const err = await promptResp.json();
+                throw new Error(err.detail || '이미지 프롬프트 생성 실패');
+            }
+            scriptData = await promptResp.json();
+        } catch (e) {
+            hideLoading();
+            showFriendlyError(e.message);
+            return;
+        }
+    }
+
+    if (!scriptData) return;
 
     const payload = {
         topic: document.getElementById('topic').value,
