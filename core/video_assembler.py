@@ -11,7 +11,7 @@ from core.audio_utils import (
     build_aligned_narration,
 )
 from core.subtitle_utils import split_subtitle_natural, split_title
-from core.tts_engines import generate_tts_edge, generate_tts_typecast
+from core.tts_engines import generate_tts_typecast
 from core.image_pipeline import apply_ken_burns, process_ai_clip
 from config import settings
 
@@ -62,42 +62,29 @@ async def assemble_shorts(job_id: str, config: dict, progress_callback=None):
     # ── Step 1: TTS 생성 ──
     _update(progress_callback, job_id, "generating_tts", 0.4, "TTS 나레이션 생성 중...")
 
-    engine = config.get("tts_engine", "edge")
     tts_speed = config.get("tts_speed", 1.1)
     voice_id = config.get("voice_id")
     emotion = config.get("emotion")
 
-    if engine == "edge":
-        narration_path, timings = await generate_tts_edge(tts_dir, sentences, voice=voice_id, speed=tts_speed)
-        clip_durations = [t["duration"] + 0.5 for t in timings]
-        clip_starts = []
-        t_acc = 0.0
-        for d in clip_durations:
-            clip_starts.append(round(t_acc, 2))
-            t_acc += d
-        total_dur = round(t_acc, 2)
-    elif engine == "typecast":
-        tc_api_key = config.get("typecast_api_key")
-        await asyncio.to_thread(
-            generate_tts_typecast, tts_dir, sentences, voice_id=voice_id, speed=tts_speed, emotion=emotion, api_key=tc_api_key
+    tc_api_key = config.get("typecast_api_key")
+    await asyncio.to_thread(
+        generate_tts_typecast, tts_dir, sentences, voice_id=voice_id, speed=tts_speed, emotion=emotion, api_key=tc_api_key
+    )
+    sentence_durations = [
+        t["duration"] for t in json.loads(
+            open(os.path.join(tts_dir, "timings_raw.json"), encoding="utf-8").read()
         )
-        sentence_durations = [
-            t["duration"] for t in json.loads(
-                open(os.path.join(tts_dir, "timings_raw.json"), encoding="utf-8").read()
-            )
-        ]
-        clip_durations, clip_starts, total_dur = calculate_dynamic_clips_image(
-            sentence_durations
-        )
-        # Typecast API가 이미 속도를 처리하므로 1.0으로 호출 → _fast.wav 파일 생성
-        await asyncio.to_thread(
-            speed_up_sentences, tts_dir, sentences, tts_speed=1.0
-        )
-        narration_path, timings = await asyncio.to_thread(
-            build_aligned_narration, tts_dir, sentences, clip_starts, total_dur
-        )
-    else:
-        raise ValueError(f"알 수 없는 TTS 엔진: {engine}")
+    ]
+    clip_durations, clip_starts, total_dur = calculate_dynamic_clips_image(
+        sentence_durations
+    )
+    # Typecast API가 이미 속도를 처리하므로 1.0으로 호출 → _fast.wav 파일 생성
+    await asyncio.to_thread(
+        speed_up_sentences, tts_dir, sentences, tts_speed=1.0
+    )
+    narration_path, timings = await asyncio.to_thread(
+        build_aligned_narration, tts_dir, sentences, clip_starts, total_dur
+    )
 
     # ── Step 2: 영상 클립 생성 (Ken Burns 또는 AI 클립 trim+zoom) ──
     video_mode = config.get("video_mode", "kenburns")

@@ -21,11 +21,6 @@ function showFriendlyError(msg) {
 
 // ── TTS 음성 옵션 (엔진별) ──
 const VOICE_OPTIONS = {
-    edge: [
-        { value: "ko-KR-HyunsuMultilingualNeural", label: "현수 (남성, 다국어)" },
-        { value: "ko-KR-InJoonNeural", label: "인준 (남성)" },
-        { value: "ko-KR-SunHiNeural", label: "선희 (여성)" },
-    ],
     typecast: [
         { value: "tc_62e8f21e979b3860fe2f6a24", label: "혜리 (여성)" },
         { value: "tc_611c3f692fac944dff493a04", label: "세희 (여성)" },
@@ -682,7 +677,7 @@ function buildConfirmSummary() {
     summaryEl.innerHTML = `
         <div class="summary-grid">
             <div class="summary-item"><span class="summary-label">제목</span><span>${escapeHtml(selectedTitle || '')}</span></div>
-            <div class="summary-item"><span class="summary-label">TTS 엔진</span><span>${engine === 'edge' ? 'Edge TTS' : 'Typecast'}</span></div>
+            <div class="summary-item"><span class="summary-label">TTS 엔진</span><span>Typecast</span></div>
             <div class="summary-item"><span class="summary-label">음성</span><span>${voiceLabel}</span></div>
             <div class="summary-item"><span class="summary-label">감정/톤</span><span>${emotion}</span></div>
             <div class="summary-item"><span class="summary-label">속도</span><span>${speed}배</span></div>

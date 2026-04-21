@@ -1,40 +1,8 @@
-"""TTS 엔진 통합 (Edge TTS / Typecast)"""
+"""TTS 엔진 통합 (Typecast)"""
 
-import asyncio
 import json
 import os
 import time
-
-
-
-async def generate_tts_edge(tts_dir, sentences, voice=None, speed=None):
-    """
-    Edge TTS로 나레이션 생성 (무료, 빠름).
-    반환: (narration_path, timings)
-    """
-    import edge_tts
-
-    text = " ".join(sentences)
-    voice = voice or "ko-KR-InJoonNeural"
-    pct = round((speed - 1.0) * 100) if speed else 10
-    rate = f"+{pct}%" if pct >= 0 else f"{pct}%"
-    communicate = edge_tts.Communicate(text, voice, rate=rate)
-    sent_timings = []
-    mp3_path = os.path.join(tts_dir, "narration.mp3")
-    with open(mp3_path, "wb") as f:
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                f.write(chunk["data"])
-            elif chunk["type"] == "SentenceBoundary":
-                sent_timings.append(
-                    {
-                        "text": chunk["text"],
-                        "offset": chunk["offset"] / 10_000_000,
-                        "duration": chunk["duration"] / 10_000_000,
-                        "end": (chunk["offset"] + chunk["duration"]) / 10_000_000,
-                    }
-                )
-    return mp3_path, sent_timings
 
 
 V21_ONLY_VOICES = {

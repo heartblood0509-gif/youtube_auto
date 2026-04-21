@@ -13,7 +13,6 @@ class StylePreset(str, Enum):
 
 
 class TTSEngine(str, Enum):
-    EDGE = "edge"
     TYPECAST = "typecast"
 
 
@@ -115,7 +114,7 @@ class JobCreateRequest(BaseModel):
     topic: str
     style: StylePreset
     video_mode: VideoMode = VideoMode.KENBURNS
-    tts_engine: TTSEngine = TTSEngine.EDGE
+    tts_engine: TTSEngine = TTSEngine.TYPECAST
     tts_speed: float = Field(default=1.0, ge=0.5, le=2.0)
     voice_id: Optional[str] = None
     emotion: Optional[str] = None

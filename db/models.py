@@ -62,7 +62,7 @@ class Job(Base):
     topic = Column(Text, default="")
     style = Column(String, default="realistic")
     video_mode = Column(String, default="kenburns")
-    tts_engine = Column(String, default="edge")
+    tts_engine = Column(String, default="typecast")
     tts_speed = Column(Float, default=1.1)
     voice_id = Column(String, nullable=True)
     emotion = Column(String, nullable=True)

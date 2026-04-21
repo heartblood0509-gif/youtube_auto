@@ -11,7 +11,7 @@ import requests as http_requests
 
 from sqlalchemy.orm import Session
 from config import settings
-from core.tts_engines import generate_tts_edge, generate_tts_typecast
+from core.tts_engines import generate_tts_typecast
 from api.deps import get_approved_user, resolve_user_api_keys
 from db.database import get_db
 from db.models import User
@@ -89,7 +89,7 @@ async def get_voice_emotions(voice_id: str = Query(..., min_length=1), db: Sessi
 
 @router.get("/preview")
 async def tts_preview(
-    engine: str = Query(..., pattern="^(edge|typecast)$"),
+    engine: str = Query(..., pattern="^typecast$"),
     voice_id: str = Query(..., min_length=1, max_length=100),
     speed: float = Query(default=1.0, ge=0.5, le=2.0),
     emotion: str = Query(default="normal", max_length=20),
@@ -115,24 +115,17 @@ async def tts_preview(
     try:
         sentences = [SAMPLE_TEXT]
 
-        if engine == "edge":
-            narration_path, _ = await generate_tts_edge(
-                tmp_dir, sentences, voice=voice_id, speed=speed
-            )
-            os.replace(narration_path, cached)
-
-        elif engine == "typecast":
-            emo = emotion if emotion != "normal" else None
-            await asyncio.to_thread(
-                generate_tts_typecast, tmp_dir, sentences,
-                voice_id=voice_id, speed=speed, emotion=emo,
-                api_key=keys["typecast"],
-            )
-            wav_path = os.path.join(tmp_dir, "sent_00.wav")
-            if os.path.exists(wav_path):
-                os.replace(wav_path, cached)
-            else:
-                raise HTTPException(500, "Typecast 오디오 생성 실패")
+        emo = emotion if emotion != "normal" else None
+        await asyncio.to_thread(
+            generate_tts_typecast, tmp_dir, sentences,
+            voice_id=voice_id, speed=speed, emotion=emo,
+            api_key=keys["typecast"],
+        )
+        wav_path = os.path.join(tmp_dir, "sent_00.wav")
+        if os.path.exists(wav_path):
+            os.replace(wav_path, cached)
+        else:
+            raise HTTPException(500, "Typecast 오디오 생성 실패")
 
     except HTTPException:
         raise
