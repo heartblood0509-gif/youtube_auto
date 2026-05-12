@@ -3,7 +3,7 @@
 from sqlalchemy import Column, String, Float, Text, DateTime, Index, Boolean
 from sqlalchemy.orm import declarative_base
 import uuid
-import datetime
+from core.time_utils import utc_now_naive
 
 Base = declarative_base()
 
@@ -24,7 +24,7 @@ class User(Base):
     gemini_api_key_enc = Column(String, nullable=True)
     typecast_api_key_enc = Column(String, nullable=True)
     fal_key_enc = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
 
 
 class UserBgm(Base):
@@ -35,7 +35,7 @@ class UserBgm(Base):
     filename = Column(String, nullable=False)
     duration = Column(Float, default=0.0)
     r2_key = Column(String, nullable=False)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
 
 
 class UserProduct(Base):
@@ -46,7 +46,7 @@ class UserProduct(Base):
     name = Column(String, nullable=False)
     filename = Column(String, nullable=False)
     r2_key = Column(String, default="")
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
 
 
 class Job(Base):
@@ -87,5 +87,5 @@ class Job(Base):
     files_expired_at = Column(DateTime, nullable=True)
 
     # 시간
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now_naive)
     completed_at = Column(DateTime, nullable=True)

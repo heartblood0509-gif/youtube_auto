@@ -52,6 +52,21 @@
         return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
+    function formatKstDateTime(value) {
+        if (!value) return '';
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return '';
+        return new Intl.DateTimeFormat('ko-KR', {
+            timeZone: 'Asia/Seoul',
+            year: 'numeric',
+            month: 'numeric',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+            second: '2-digit',
+        }).format(date);
+    }
+
     async function loadJobs() {
         const resp = await authFetch('/api/jobs/');
         if (!resp || !resp.ok) return;
@@ -68,7 +83,7 @@
                 <div class="job-info">
                     <span class="job-status status-${escapeHtml(job.status)}">${escapeHtml(statusLabel(job.status))}</span>
                     <span class="job-id">${escapeHtml(job.job_id)}</span>
-                    <span class="job-date">${new Date(job.created_at).toLocaleString('ko-KR')}</span>
+                    <span class="job-date">${formatKstDateTime(job.created_at)}</span>
                     ${expireBadge(job)}
                 </div>
                 <p class="job-step">${escapeHtml(job.current_step || '')}</p>

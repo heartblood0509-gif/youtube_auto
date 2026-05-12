@@ -2,7 +2,7 @@
 
 from db.database import SessionLocal
 from db.models import Job
-import datetime
+from core.time_utils import utc_now_naive
 
 
 def update_job_progress(job_id: str, status: str, progress: float, step: str):
@@ -15,7 +15,7 @@ def update_job_progress(job_id: str, status: str, progress: float, step: str):
             job.progress = progress
             job.current_step = step
             if status == "completed":
-                job.completed_at = datetime.datetime.utcnow()
+                job.completed_at = utc_now_naive()
             db.commit()
     finally:
         db.close()

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from db.database import get_db
 from db.models import User, Job
 from api.deps import get_current_admin
+from core.time_utils import utc_isoformat
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -21,7 +22,7 @@ async def list_all_users(db: Session = Depends(get_db), _admin: User = Depends(g
             "role": u.role,
             "provider": u.provider,
             "approved": u.approved,
-            "created_at": u.created_at.isoformat() if u.created_at else None,
+            "created_at": utc_isoformat(u.created_at),
         }
         for u in users
     ]
@@ -37,7 +38,7 @@ async def list_pending_users(db: Session = Depends(get_db), _admin: User = Depen
             "email": u.email,
             "nickname": u.nickname,
             "provider": u.provider,
-            "created_at": u.created_at.isoformat() if u.created_at else None,
+            "created_at": utc_isoformat(u.created_at),
         }
         for u in users
     ]

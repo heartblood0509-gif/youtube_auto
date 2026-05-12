@@ -1,6 +1,5 @@
 """이미지/영상/BGM 파일 서빙 API"""
 
-import datetime
 import json
 import os
 import subprocess
@@ -15,6 +14,7 @@ from core.r2_storage import (
     is_r2_enabled, r2_file_exists, stream_from_r2,
     generate_presigned_url, upload_file as r2_upload,
 )
+from core.time_utils import utc_now_naive
 from api.deps import get_approved_user, get_user_job
 from db.database import get_db
 from db.models import Job, User, UserBgm
@@ -27,9 +27,9 @@ def _mark_expired_if_old(db: Session, job_id: str):
     """파일이 없고 30일 지난 작업이면 만료 표시"""
     job = db.query(Job).filter(Job.id == job_id).first()
     if job and job.completed_at and not job.files_expired_at:
-        age = datetime.datetime.utcnow() - job.completed_at
+        age = utc_now_naive() - job.completed_at
         if age.days >= 30:
-            job.files_expired_at = datetime.datetime.utcnow()
+            job.files_expired_at = utc_now_naive()
             job.video_path = None
             db.commit()
 

@@ -108,6 +108,33 @@
         return div.innerHTML;
     }
 
+    function formatKstDate(value) {
+        if (!value) return '';
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return '';
+        return new Intl.DateTimeFormat('ko-KR', {
+            timeZone: 'Asia/Seoul',
+            year: 'numeric',
+            month: 'numeric',
+            day: 'numeric',
+        }).format(date);
+    }
+
+    function formatKstDateTime(value) {
+        if (!value) return '';
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return '';
+        return new Intl.DateTimeFormat('ko-KR', {
+            timeZone: 'Asia/Seoul',
+            year: 'numeric',
+            month: 'numeric',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+            second: '2-digit',
+        }).format(date);
+    }
+
     authReady.then(user => {
         if (user.role !== 'admin') {
             window.location.href = '/';
@@ -145,7 +172,7 @@
             <div class="user-row" id="pending-${escapeHtml(u.id)}">
                 <span class="nickname">${escapeHtml(u.nickname || '-')}</span>
                 <span class="email">${escapeHtml(u.email)}</span>
-                <span class="date">${u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : ''}</span>
+                <span class="date">${formatKstDate(u.created_at)}</span>
                 <button class="btn-approve" onclick="approveUser('${escapeHtml(u.id)}')">승인</button>
                 <button class="btn-reject" onclick="rejectUser('${escapeHtml(u.id)}')">거절</button>
             </div>
@@ -163,7 +190,7 @@
                 <span class="email">${escapeHtml(u.email)}</span>
                 <span class="role-badge ${u.role}">${u.role}</span>
                 <span class="approved-badge ${u.approved ? 'yes' : 'no'}">${u.approved ? '승인' : '미승인'}</span>
-                <span class="date">${u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : ''}</span>
+                <span class="date">${formatKstDate(u.created_at)}</span>
                 <button class="btn-role" onclick="toggleRole('${escapeHtml(u.id)}', '${u.role}')">${u.role === 'admin' ? 'user로 변경' : 'admin으로 변경'}</button>
             </div>
         `).join('');
@@ -202,7 +229,7 @@
                 <div class="job-info">
                     <span class="job-status status-${escapeHtml(job.status)}">${escapeHtml(statusLabel(job.status))}</span>
                     <span class="job-id">${escapeHtml(job.job_id)}</span>
-                    <span class="job-date">${new Date(job.created_at).toLocaleString('ko-KR')}</span>
+                    <span class="job-date">${formatKstDateTime(job.created_at)}</span>
                 </div>
                 ${(job.owner_nickname || job.owner_email || job.topic) ? `
                 <div class="job-owner-info">

@@ -8,6 +8,7 @@ from api.deps import get_approved_user, get_user_job, get_user_job_by_uid
 from db.database import get_db
 from db.models import Job, User, UserProduct
 from config import settings
+from core.time_utils import utc_isoformat, utc_now_naive
 import asyncio
 import glob
 import json
@@ -19,7 +20,6 @@ router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
 
 def _job_to_response(job: Job, user_map: dict | None = None) -> JobResponse:
-    import datetime as _dt
     video_url = None
     if job.video_path and os.path.exists(job.video_path):
         video_url = f"/api/jobs/{job.id}/video"
@@ -27,7 +27,7 @@ def _job_to_response(job: Job, user_map: dict | None = None) -> JobResponse:
     files_expired = bool(job.files_expired_at)
     days_remaining = None
     if job.completed_at and not files_expired:
-        age = (_dt.datetime.utcnow() - job.completed_at).days
+        age = (utc_now_naive() - job.completed_at).days
         days_remaining = max(0, 30 - age)
         if days_remaining == 0:
             files_expired = True
@@ -45,8 +45,8 @@ def _job_to_response(job: Job, user_map: dict | None = None) -> JobResponse:
         status=job.status,
         progress=job.progress,
         current_step=job.current_step,
-        created_at=job.created_at.isoformat() if job.created_at else "",
-        completed_at=job.completed_at.isoformat() if job.completed_at else None,
+        created_at=utc_isoformat(job.created_at) or "",
+        completed_at=utc_isoformat(job.completed_at),
         video_url=video_url,
         error=job.error_message,
         files_expired=files_expired,
