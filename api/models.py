@@ -182,6 +182,16 @@ class EditLineRequest(BaseModel):
     text: str = Field(..., min_length=0, max_length=5000)
 
 
+class MergeLineRequest(BaseModel):
+    """카드 B 병합 요청 — line_index 카드를 line_index-1과 합친다."""
+    line_index: int = Field(..., ge=1)
+
+
+class DeleteLineRequest(BaseModel):
+    """카드 B 줄 삭제 요청 (× 버튼)."""
+    line_index: int = Field(..., ge=0)
+
+
 class TtsPreviewBuildRequest(BaseModel):
     """음성 설정 단계에서 TTS를 미리 생성해 세션에 저장하는 요청."""
     sentences: list[str]

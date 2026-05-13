@@ -68,6 +68,5 @@ async def root(request: Request):
 if __name__ == "__main__":
     import uvicorn
 
-    is_dev = not settings.DATABASE_URL  # PostgreSQL 설정 시 프로덕션 모드
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=is_dev)
+    uvicorn.run("main:app", host="0.0.0.0", port=port)

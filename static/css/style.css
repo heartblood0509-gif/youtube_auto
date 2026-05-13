@@ -1678,6 +1678,7 @@ input[type="range"] {
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 12px;
+    position: relative;
 }
 .user-line-num {
     font-weight: bold;
@@ -1689,6 +1690,31 @@ input[type="range"] {
     line-height: 1.4;
     font-size: 14px;
     word-break: keep-all;
+    text-align: left;
+}
+.user-line-delete {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    width: 22px;
+    height: 22px;
+    line-height: 1;
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 18px;
+    border-radius: 4px;
+    padding: 0;
+    z-index: 1;
+}
+.user-line-delete:hover {
+    background: rgba(231, 76, 60, 0.15);
+    color: var(--error);
+}
+/* × 버튼은 빈 카드에서만 보임. 항상 DOM에는 있고 가시성만 토글하므로 입력 시 재렌더 없이 즉시 사라짐. */
+.user-line-item:not(.is-empty) .user-line-delete {
+    display: none;
 }
 .user-line-slot {
     width: 140px;
@@ -1736,14 +1762,15 @@ input[type="range"] {
     border-color: var(--error);
     background: rgba(231, 76, 60, 0.05);
 }
-.user-line-item.empty {
+.user-line-item.is-empty {
     border-color: var(--error);
     background: rgba(231, 76, 60, 0.05);
 }
-.user-line-item.empty .user-line-text {
+.user-line-item.is-empty .user-line-text {
     min-height: 1.4em;
 }
-.user-line-item.empty .user-line-text:empty::before {
+/* 빈 카드 placeholder: 브라우저가 <br> 잔재를 남겨도 안정적으로 뜨도록 :empty 의존 제거 */
+.user-line-item.is-empty .user-line-text::before {
     content: attr(data-placeholder);
     color: var(--text-dim);
     pointer-events: none;
