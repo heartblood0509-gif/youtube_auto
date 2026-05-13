@@ -70,6 +70,10 @@ class Job(Base):
     title_line1 = Column(String, nullable=True)
     title_line2 = Column(String, nullable=True)
     script_json = Column(Text, default="[]")
+    # 카드 A("AI가 모두 생성")는 "ai_full", 카드 B("사용자 직접 제공")는 "user_assets"
+    generation_mode = Column(String, default="ai_full")
+    # 줄별 자산 출처: ["ai"|"image"|"clip", ...] (길이 == 줄 개수). 카드 B에서만 사용.
+    line_sources_json = Column(Text, default="[]")
     product_image_id = Column(String, nullable=True)
     bgm_volume = Column(Float, default=0.12)
     bgm_filename = Column(String, nullable=True)

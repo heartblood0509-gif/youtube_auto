@@ -113,3 +113,43 @@ async def split_long_line_with_gemini(
     except Exception as e:
         logger.warning("[line_splitter] Gemini 분할 실패 → 폴백: %s", e)
         return None
+
+
+_SENTENCE_BOUNDARY = re.compile(
+    r'(?<=[.!?。！？])\s+'   # 마침표/물음표/느낌표 + 공백
+    r'|\n+'                  # 줄바꿈
+)
+_DECIMAL_DOT = re.compile(r'(\d)\.(\d)')   # 소수점 보호
+_ELLIPSIS = re.compile(r'\.{2,}')          # 말줄임표 보호
+_TERMINATOR = re.compile(r"[.!?,、。！？，’‘”“\"']$")
+_INTERNAL_WS = re.compile(r'\s+')
+
+
+def split_user_script_by_sentence(script: str) -> list[str]:
+    """사용자 대본을 호흡 단위로 쪼갠다. 원문 글자 100% 보존(공백·줄바꿈만 정리).
+
+    종결 기호로 끝나는 줄만 분리 확정하고, 미완성 줄은 다음 줄과 합쳐 한 호흡으로 만든다.
+    종결 기호: 마침표·물음표·느낌표(한·중·일 변형 포함), 쉼표, 닫는 따옴표(' " ' ").
+    엣지 케이스:
+    - 3.14 같은 소수점은 분리하지 않음
+    - "..." 말줄임표는 분리하지 않음
+    """
+    if not script or not script.strip():
+        return []
+    masked = _DECIMAL_DOT.sub(r'\1<DOT>\2', script)
+    masked = _ELLIPSIS.sub('<ELLIPSIS>', masked)
+    parts = _SENTENCE_BOUNDARY.split(masked)
+
+    merged: list[str] = []
+    buffer = ''
+    for p in parts:
+        s = _INTERNAL_WS.sub(' ', p.replace('<DOT>', '.').replace('<ELLIPSIS>', '...')).strip()
+        if not s:
+            continue
+        buffer = f'{buffer} {s}' if buffer else s
+        if _TERMINATOR.search(buffer):
+            merged.append(buffer)
+            buffer = ''
+    if buffer:
+        merged.append(buffer)
+    return merged

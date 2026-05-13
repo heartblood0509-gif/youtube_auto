@@ -95,13 +95,66 @@ async def assemble_shorts(job_id: str, config: dict, progress_callback=None):
         build_aligned_narration, tts_dir, sentences, clip_starts, total_dur
     )
 
-    # ── Step 2: 영상 클립 생성 (Ken Burns 또는 AI 클립 trim+zoom) ──
+    # ── Step 2: 영상 클립 생성 (카드 B 줄별 매니페스트 / Ken Burns / AI 클립 trim+zoom) ──
     video_mode = config.get("video_mode", "kenburns")
     ai_clips = config.get("ai_clips")
+    line_sources = config.get("line_sources")
+    asset_paths = config.get("asset_paths")
 
     clip_files = []
+    N = len(config["lines"])
 
-    if video_mode in ("hailuo", "hailuo23", "wan", "kling", "veo", "veo_lite") and ai_clips and len(ai_clips) == len(images):
+    if line_sources and asset_paths and len(line_sources) == N and len(asset_paths) == N:
+        # 카드 B: 줄별 자산 매니페스트로 분기 처리
+        _update(
+            progress_callback, job_id, "assembling_video", 0.55, "줄별 자산 처리 중..."
+        )
+        for i in range(N):
+            src = line_sources[i]
+            asset = asset_paths[i]
+            motion = motions[i] if i < len(motions) else "zoom_in"
+            dur = clip_durations[i]
+            clip_path = os.path.join(temp_dir, f"clip_{i:02d}.mp4")
+
+            if src == "clip":
+                # 사용자 업로드 영상: 길이 검증 후 trim+zoom 처리
+                v_dur = await asyncio.to_thread(get_duration, asset)
+                if v_dur + 0.05 < dur:
+                    raise RuntimeError(
+                        f"{i + 1}번째 줄 영상이 음성보다 짧습니다 "
+                        f"(영상 {v_dur:.2f}초 < 음성 {dur:.2f}초). "
+                        f"더 긴 영상으로 교체해주세요."
+                    )
+                await asyncio.to_thread(
+                    process_ai_clip,
+                    clip_path=asset,
+                    output_path=clip_path,
+                    duration=dur,
+                    width=settings.TARGET_WIDTH,
+                    height=settings.TARGET_HEIGHT,
+                    fps=settings.FPS,
+                )
+            else:
+                # "ai" 또는 "image": 이미지에 Ken Burns 적용
+                await asyncio.to_thread(
+                    apply_ken_burns,
+                    image_path=asset,
+                    output_path=clip_path,
+                    motion_type=motion,
+                    duration=dur,
+                    width=settings.TARGET_WIDTH,
+                    height=settings.TARGET_HEIGHT,
+                    fps=settings.FPS,
+                )
+            clip_files.append(clip_path)
+            _update(
+                progress_callback,
+                job_id,
+                "assembling_video",
+                0.55 + (i + 1) / N * 0.15,
+                f"줄별 자산 처리 ({i + 1}/{N})",
+            )
+    elif video_mode in ("hailuo", "hailuo23", "wan", "kling", "veo", "veo_lite") and ai_clips and len(ai_clips) == len(images):
         # AI 영상 모드: AI 클립에 trim + 서서히 줌인 적용
         _update(
             progress_callback, job_id, "assembling_video", 0.55, "AI 클립 trim + 줌인 적용 중..."

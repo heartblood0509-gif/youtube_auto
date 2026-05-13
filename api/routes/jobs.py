@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Path, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from api.models import JobCreateRequest, JobResponse, JobStatus
+from api.models import JobCreateRequest, JobResponse, JobStatus, DraftJobRequest, DraftJobResponse
 from api.deps import get_approved_user, get_user_job, get_user_job_by_uid
 from db.database import get_db
 from db.models import Job, User, UserProduct
@@ -140,6 +140,8 @@ async def create_job(
         bgm_filename=request.bgm_filename,
         bgm_start_sec=request.bgm_start_sec,
         tts_session_id=request.tts_session_id,
+        generation_mode=request.generation_mode,
+        line_sources_json=json.dumps(request.line_sources, ensure_ascii=False),
         status="pending",
         current_step="작업 대기 중...",
     )
@@ -172,6 +174,55 @@ async def create_job(
     background_tasks.add_task(_generate_images_task, job.id)
 
     return _job_to_response(job)
+
+
+@router.post("/draft", response_model=DraftJobResponse)
+async def create_draft_job(
+    request: DraftJobRequest,
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_approved_user),
+):
+    """카드 B 전용: 쪼개진 대본만으로 draft Job 생성.
+
+    이 시점에서는 음성/BGM/제목이 아직 정해지지 않았다.
+    줄별 자산 편집 화면에서 업로드/AI 생성을 거친 뒤, /confirm 시점에
+    음성·BGM 정보가 body로 함께 전송돼 Job이 보강된 후 영상 조립이 시작된다.
+    """
+    job_id = uuid.uuid4().hex[:12]
+
+    n = len(request.lines)
+    script_lines = [
+        {
+            "text": text,
+            "image_prompt": "",
+            "motion": "zoom_in",
+            "status": "pending",
+            "fail_reason": None,
+        }
+        for text in request.lines
+    ]
+
+    job = Job(
+        id=job_id,
+        user_id=_user.id,
+        topic="",
+        title="",
+        script_json=json.dumps(script_lines, ensure_ascii=False),
+        generation_mode="user_assets",
+        line_sources_json=json.dumps(["ai"] * n, ensure_ascii=False),
+        status="preview_ready",
+        current_step="자산 편집 대기 중",
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    # 작업 디렉토리 생성
+    job_dir = os.path.join(settings.STORAGE_DIR, job.id)
+    for sub in ["images", "clips", "tts", "temp", "output"]:
+        os.makedirs(os.path.join(job_dir, sub), exist_ok=True)
+
+    return DraftJobResponse(job_id=job.id)
 
 
 @router.get("/", response_model=list[JobResponse])

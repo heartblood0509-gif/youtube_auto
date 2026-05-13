@@ -173,8 +173,30 @@ async def render_video_for_job(job_id: str):
         lines = json.loads(job.script_json)
         job_dir = os.path.join(settings.STORAGE_DIR, job_id)
 
-        # 이미지 파일 목록
-        images = sorted(glob.glob(os.path.join(job_dir, "images", "img_*.png")))
+        # ─── 줄별 자산 매니페스트 (카드 B에서만 사용) ───
+        line_sources = None
+        asset_paths = None
+        if getattr(job, "generation_mode", "ai_full") == "user_assets":
+            line_sources = json.loads(job.line_sources_json or "[]")
+            if len(line_sources) != len(lines):
+                # 안전 차원: 부족분은 'ai'로 채움
+                line_sources = (line_sources + ["ai"] * len(lines))[: len(lines)]
+            asset_paths = []
+            for i, src in enumerate(line_sources):
+                if src == "clip":
+                    asset_paths.append(os.path.join(job_dir, "clips", f"clip_raw_{i:02d}.mp4"))
+                else:
+                    asset_paths.append(os.path.join(job_dir, "images", f"img_{i:02d}.png"))
+
+        # 이미지 파일 목록 (카드 A 호환 — Ken Burns 전 줄 경로)
+        if line_sources is not None:
+            # 카드 B: 줄 인덱스 0..N-1를 직접 순회. assembler가 asset_paths를 우선 사용.
+            images = [
+                os.path.join(job_dir, "images", f"img_{i:02d}.png")
+                for i in range(len(lines))
+            ]
+        else:
+            images = sorted(glob.glob(os.path.join(job_dir, "images", "img_*.png")))
 
         # BGM 파일 결정: 로컬 → R2 다운로드 폴백
         bgm_path = None
@@ -197,9 +219,12 @@ async def render_video_for_job(job_id: str):
             if bgm_files:
                 bgm_path = bgm_files[0]
 
-        # AI 클립이 있으면 경로 수집
+        # AI 클립이 있으면 경로 수집 (카드 A 전용)
         clips_dir = os.path.join(job_dir, "clips")
-        ai_clips = sorted(glob.glob(os.path.join(clips_dir, "clip_raw_*.mp4")))
+        if line_sources is None:
+            ai_clips = sorted(glob.glob(os.path.join(clips_dir, "clip_raw_*.mp4")))
+        else:
+            ai_clips = None  # 카드 B는 매니페스트로 처리
 
         keys = resolve_user_api_keys(db, job.user_id)
 
@@ -215,6 +240,8 @@ async def render_video_for_job(job_id: str):
             "title_line2": getattr(job, "title_line2", None),
             "video_mode": getattr(job, "video_mode", "kenburns") or "kenburns",
             "ai_clips": ai_clips if ai_clips else None,
+            "line_sources": line_sources,
+            "asset_paths": asset_paths,
             "tts_engine": job.tts_engine,
             "tts_speed": job.tts_speed,
             "voice_id": job.voice_id,
@@ -248,7 +275,11 @@ async def render_video_for_job(job_id: str):
 
 
 async def regenerate_image_for_job(job_id: str, line_index: int, korean_request: str = None, english_prompt: str = None):
-    """단일 이미지 재생성 — 영어 프롬프트 직접 사용 또는 한글→영어 변환"""
+    """단일 이미지 재생성 — 영어 프롬프트 직접 사용 또는 한글→영어 변환.
+
+    카드 B(generation_mode=='user_assets')에서는 Job 전체 상태를 바꾸지 않고
+    줄별 status만 갱신한다. 실패해도 다른 줄과 사용자 업로드 경로로 복구 가능.
+    """
     from core.gemini_client import generate_image, korean_to_nb2_prompt, PRODUCT_REFERENCE_PREFIX
     from PIL import Image
 
@@ -257,6 +288,8 @@ async def regenerate_image_for_job(job_id: str, line_index: int, korean_request:
         job = db.query(Job).filter(Job.id == job_id).first()
         if not job:
             return
+
+        is_user_assets = getattr(job, "generation_mode", "ai_full") == "user_assets"
 
         lines = json.loads(job.script_json)
         line = lines[line_index]
@@ -303,14 +336,44 @@ async def regenerate_image_for_job(job_id: str, line_index: int, korean_request:
                 reference_images=refs,
             )
 
-            job.status = "preview_ready"
-            db.commit()
+            # 사용자 업로드 영상이 있던 줄에 AI 이미지를 새로 생성한 경우 정리
+            if is_user_assets:
+                prev_clip = os.path.join(job_dir, "clips", f"clip_raw_{line_index:02d}.mp4")
+                if os.path.exists(prev_clip):
+                    try:
+                        os.remove(prev_clip)
+                    except Exception:
+                        pass
+
+                # 줄별 자산 출처와 상태 갱신
+                sources = json.loads(job.line_sources_json or "[]")
+                while len(sources) < len(lines):
+                    sources.append("ai")
+                sources[line_index] = "ai"
+                lines[line_index]["status"] = "ready"
+                lines[line_index]["fail_reason"] = None
+                job.line_sources_json = json.dumps(sources, ensure_ascii=False)
+                job.script_json = json.dumps(lines, ensure_ascii=False)
+                db.commit()
+            else:
+                job.status = "preview_ready"
+                db.commit()
 
             from core.r2_storage import upload_file as r2_upload, is_r2_enabled
             if is_r2_enabled():
                 await r2_upload(output_path, f"jobs/{job_id}/images/img_{line_index:02d}.png")
 
         except Exception as e:
-            mark_job_failed(job_id, f"이미지 재생성 실패: {str(e)}")
+            if is_user_assets:
+                # 줄별 상태만 failed로 갱신
+                try:
+                    lines[line_index]["status"] = "failed"
+                    lines[line_index]["fail_reason"] = str(e)[:200]
+                    job.script_json = json.dumps(lines, ensure_ascii=False)
+                    db.commit()
+                except Exception:
+                    pass
+            else:
+                mark_job_failed(job_id, f"이미지 재생성 실패: {str(e)}")
     finally:
         db.close()
