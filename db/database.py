@@ -57,6 +57,8 @@ _MIGRATIONS = {
         "files_expired_at": "TIMESTAMP",
         "product_image_id": "VARCHAR",
         "tts_session_id": "VARCHAR",
+        "generation_mode": "VARCHAR DEFAULT 'ai_full'",
+        "line_sources_json": "TEXT DEFAULT '[]'",
     },
     "users": {
         "gemini_api_key_enc": "VARCHAR",

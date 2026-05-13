@@ -1,7 +1,7 @@
 /**
  * 메인 페이지 - 멀티스텝 대본 생성
  * Step 1: 주제 설정 → Step 2: 제목 선택 → Step 3: 나레이션 확인
- * → Step 4: 음성 설정 → Step 5: BGM 설정 → Step 6: 최종 확인 → Job 생성
+ * → Step 4: 음성 설정 → Step 5: BGM 설정 → "이미지 생성 시작" → Job 생성
  */
 
 function showFriendlyError(msg) {
@@ -34,7 +34,9 @@ const VOICE_OPTIONS = {
 };
 
 // ── 스텝 구성 ──
-const STEPS = [
+// 모드 선택 화면(step-mode-select)은 STEPS 외부의 진입 화면이라 배열에 포함하지 않는다.
+// 타임라인은 사용자가 모드를 고른 다음에야 활성화된다.
+const STEPS_AI_FULL = [
     { id: 'step-input',     label: '주제',     summaryFn: () => document.getElementById('topic').value || '' },
     { id: 'step-titles',    label: '제목',     summaryFn: () => selectedTitle || '' },
     { id: 'step-narration', label: '나레이션', summaryFn: () => selectedTitle || '' },
@@ -43,9 +45,22 @@ const STEPS = [
         return sel && sel.selectedOptions[0] ? sel.selectedOptions[0].text : '';
     }},
     { id: 'step-bgm',       label: 'BGM',      summaryFn: () => selectedBgm ? selectedBgm.replace(/\.(mp3|wav|ogg)$/i, '') : '없음' },
-    { id: 'step-confirm',   label: '확인',     summaryFn: () => '' },
 ];
+const STEPS_USER_ASSETS = [
+    { id: 'step-user-script', label: '대본',     summaryFn: () => ((window._userScript || '').slice(0, 12)) },
+    { id: 'step-user-lines',  label: '자산',     summaryFn: () => ((window._splitLines || []).length ? `${window._splitLines.length}줄` : '') },
+    { id: 'step-tts',         label: '음성',     summaryFn: () => {
+        const sel = document.getElementById('tts-voice');
+        return sel && sel.selectedOptions[0] ? sel.selectedOptions[0].text : '';
+    }},
+    { id: 'step-bgm',         label: 'BGM',      summaryFn: () => selectedBgm ? selectedBgm.replace(/\.(mp3|wav|ogg)$/i, '') : '없음' },
+];
+let STEPS = STEPS_AI_FULL;
 let currentStepIndex = 0;
+window._generationMode = null;  // 'ai_full' | 'user_assets' — 모드 선택 전엔 null
+window._draftJobId = null;       // 카드 B: draft Job ID
+window._splitLines = [];         // 카드 B: 쪼개진 대본 (텍스트만)
+window._userScript = '';         // 카드 B: 원본 자유 대본
 
 // ── 상태 관리 ──
 let titleOptions = null;
@@ -59,6 +74,7 @@ let selectedBgm = null;
 let bgmAudio = null;
 let bgmDuration = 0;
 let previewAudio = null;
+let isCreatingJob = false;
 
 // ── 카테고리 필드 토글 ──
 function toggleCategoryFields() {
@@ -275,6 +291,18 @@ function getCategoryPayload() {
 }
 
 // ──────────────────────────────────
+// "제목 생성하기" 버튼 활성/비활성 상태 갱신
+// 카테고리·영상 목적은 기본값이 있으므로 topic 트림값만 검사한다.
+// ──────────────────────────────────
+function updateGenerateButtonState() {
+    const btn = document.getElementById('btn-generate');
+    if (!btn) return;
+    btn.disabled = !document.getElementById('topic').value.trim();
+}
+document.getElementById('topic').addEventListener('input', updateGenerateButtonState);
+updateGenerateButtonState();
+
+// ──────────────────────────────────
 // Step 2: 제목 생성
 // ──────────────────────────────────
 async function generateTitles() {
@@ -473,7 +501,7 @@ async function approveNarration() {
 
     window._approvedNarrationLines = narrationLines;
 
-    // promo_comment는 이미지 프롬프트 생성을 "최종 확인" 단계로 연기한다.
+    // promo_comment는 이미지 프롬프트 생성을 BGM 단계의 "이미지 생성 시작" 시점으로 연기한다.
     // (음성 단계에서 6초 초과 줄이 분리될 수 있어, 분리 반영된 텍스트로
     //  프롬프트를 만들어야 이미지 컷 수와 영상 클립 수가 일치한다.)
     const category = document.getElementById('category').value;
@@ -674,7 +702,7 @@ async function confirmTtsSettings() {
             }
             const data = await resp.json();
             window._ttsSessionId = data.session_id;
-            // 분리 결과 보관 — 최종 확인 단계에서 이미지 프롬프트 생성 시 사용
+            // 분리 결과 보관 — "이미지 생성 시작" 시점에 이미지 프롬프트 생성 시 사용
             window._expandedSentences = data.expanded_sentences || narrationLines;
         } catch (e) {
             clearTimeout(loadingTimer);
@@ -685,8 +713,8 @@ async function confirmTtsSettings() {
         hideLoading();
     }
 
-    advanceToStep(4);
-    if (bgmList.length === 0) loadBgmList();
+    // 모드별 BGM 단계 인덱스가 다르므로 ID 기반으로 이동
+    advanceToStepById('step-bgm');
 }
 
 // ── BGM 이벤트 리스너 ──
@@ -707,19 +735,33 @@ document.getElementById('bgm-start-sec').addEventListener('change', function() {
 });
 
 // ──────────────────────────────────
-// Step 6: 최종 확인
+// 생성 직전 가드: 타임라인 점프·콘솔 호출 등 우회 경로 방어
 // ──────────────────────────────────
-function confirmBgmSettings() {
-    advanceToStep(5);
-}
+function validateBeforeCreate() {
+    // 카드 B는 별도 검증 (대본 자산 + 음성)
+    if (window._generationMode === 'user_assets') {
+        if (!window._draftJobId) {
+            alert('대본 쪼개기를 먼저 진행해주세요.');
+            goToStep(stepIndexOf('step-user-script'));
+            return false;
+        }
+        const lines = window._splitLines || [];
+        const statuses = window._userLineStatuses || [];
+        const missingIdx = lines.findIndex((_, i) => statuses[i] !== 'ready');
+        if (missingIdx >= 0) {
+            alert(`${missingIdx + 1}번째 줄의 자산이 준비되지 않았습니다.`);
+            goToStep(stepIndexOf('step-user-lines'));
+            return false;
+        }
+        const voiceSel = document.getElementById('tts-voice');
+        if (!voiceSel || !voiceSel.value) {
+            alert('음성을 선택해주세요.');
+            goToStep(stepIndexOf('step-tts'));
+            return false;
+        }
+        return true;
+    }
 
-function buildConfirmSummary() {
-    const summaryEl = document.getElementById('confirm-summary');
-    const createBtn = document.querySelector('#step-confirm .btn-primary');
-
-    // promo_comment는 이미지 프롬프트 생성을 최종 확인 시점에 수행하므로
-    // scriptData가 아직 null이어도 '나레이션 확정' 자체는 끝났을 수 있다.
-    // → 나레이션 확정 여부는 _approvedNarrationLines 기반으로 판정.
     const categoryVal = document.getElementById('category').value;
     const contentTypeVal = categoryVal === 'cosmetics'
         ? document.getElementById('content-type').value
@@ -728,140 +770,181 @@ function buildConfirmSummary() {
     const narrationApproved = isPromoComment
         ? !!(window._approvedNarrationLines && window._approvedNarrationLines.length > 0)
         : !!scriptData;
-    const ttsReady = !isPromoComment || !!window._ttsSessionId;
+    const ttsSessionReady = !isPromoComment || !!window._ttsSessionId;
+    const voiceSel = document.getElementById('tts-voice');
+    const voiceReady = !!(voiceSel && voiceSel.value);
 
-    // 필수 단계 검사
     const missing = [];
-    if (!document.getElementById('topic').value.trim()) missing.push({ idx: 0, name: '주제 입력' });
-    if (!selectedTitle) missing.push({ idx: 1, name: '제목 선택' });
-    if (!narrationApproved) missing.push({ idx: 2, name: '나레이션 확정' });
-    if (!ttsReady) missing.push({ idx: 3, name: '나레이션 음성 만들기' });
+    if (!document.getElementById('topic').value.trim()) missing.push({ id: 'step-input', name: '주제 입력' });
+    if (!selectedTitle) missing.push({ id: 'step-titles', name: '제목 선택' });
+    if (!narrationApproved) missing.push({ id: 'step-narration', name: '나레이션 확정' });
+    if (!voiceReady) missing.push({ id: 'step-tts', name: '나레이션 음성 선택' });
+    if (!ttsSessionReady) missing.push({ id: 'step-tts', name: '나레이션 음성 만들기' });
 
     if (missing.length > 0) {
-        const items = missing.map(m =>
-            `<li><a href="#" onclick="goToStep(${m.idx}); return false;">${escapeHtml(m.name)}</a></li>`
-        ).join('');
-        summaryEl.innerHTML = `
-            <p class="text-dim" style="text-align:center; padding:20px; font-size:15px; line-height:1.7;">
-                아직 영상 생성 준비가 완료되지 않았습니다.<br>아래 단계를 먼저 진행해주세요:
-            </p>
-            <ul class="missing-steps">${items}</ul>
-        `;
-        if (createBtn) createBtn.disabled = true;
-        return;
+        alert(`다음 단계를 먼저 진행해주세요: ${missing[0].name}`);
+        const idx = stepIndexOf(missing[0].id);
+        if (idx >= 0) goToStep(idx);
+        return false;
     }
-    if (createBtn) createBtn.disabled = false;
+    return true;
+}
 
-    const engine = document.getElementById('tts-engine').value;
-    const voiceLabel = document.getElementById('tts-voice').selectedOptions[0]?.text || '';
-    const emotion = document.getElementById('tts-emotion').value;
-    const speed = document.getElementById('tts-speed').value;
-    const bgm = selectedBgm ? selectedBgm.replace(/\.(mp3|wav|ogg)$/i, '') : '없음';
-    const bgmVol = document.getElementById('bgm-volume').value;
+// BGM 단계 버튼 wrapper — BGM 미선택 시 확인 후 createJob 호출
+async function startCreateFromBgm() {
+    if (isCreatingJob) return;
+    if (!validateBeforeCreate()) return;
+    if (!selectedBgm) {
+        const ok = confirm('BGM을 선택하지 않았습니다.\nBGM 없이 진행하시겠어요?');
+        if (!ok) return;
+    }
+    if (window._generationMode === 'user_assets') {
+        await confirmDraftJob();
+    } else {
+        await createJob();
+    }
+}
 
-    summaryEl.innerHTML = `
-        <div class="summary-grid">
-            <div class="summary-item"><span class="summary-label">제목</span><span>${escapeHtml(selectedTitle || '')}</span></div>
-            <div class="summary-item"><span class="summary-label">TTS 엔진</span><span>Typecast</span></div>
-            <div class="summary-item"><span class="summary-label">음성</span><span>${voiceLabel}</span></div>
-            <div class="summary-item"><span class="summary-label">감정/톤</span><span>${emotion}</span></div>
-            <div class="summary-item"><span class="summary-label">속도</span><span>${speed}배</span></div>
-            <div class="summary-item"><span class="summary-label">BGM</span><span>${escapeHtml(bgm)}</span></div>
-            <div class="summary-item"><span class="summary-label">BGM 볼륨</span><span>${bgmVol}%</span></div>
-        </div>
-    `;
+// 카드 B: 이미 만들어둔 draft Job에 음성/BGM 정보를 채워 /confirm 호출.
+async function confirmDraftJob() {
+    if (isCreatingJob) return;
+    isCreatingJob = true;
+    try {
+        const jobId = window._draftJobId;
+        if (!jobId) {
+            alert('대본 쪼개기를 먼저 진행해주세요.');
+            return;
+        }
+
+        const payload = {
+            video_mode: 'kenburns',
+            tts_engine: document.getElementById('tts-engine').value,
+            tts_speed: parseFloat(document.getElementById('tts-speed').value),
+            voice_id: document.getElementById('tts-voice').value,
+            emotion: document.getElementById('tts-engine').value === 'typecast' ? document.getElementById('tts-emotion').value : null,
+            bgm_filename: selectedBgm || null,
+            bgm_start_sec: parseFloat(document.getElementById('bgm-start-sec').value) || 0,
+            bgm_volume: parseInt(document.getElementById('bgm-volume').value) / 100,
+        };
+
+        showLoading('작업 시작 중...');
+        try {
+            const resp = await authFetch(`/api/jobs/${jobId}/confirm`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (!resp.ok) {
+                const err = await resp.json();
+                throw new Error(err.detail || '영상 제작 시작 실패');
+            }
+            window.location.href = `/static/status.html?job=${jobId}&phase=render`;
+        } catch (e) {
+            showFriendlyError(e.message);
+            hideLoading();
+        }
+    } finally {
+        isCreatingJob = false;
+    }
 }
 
 // ──────────────────────────────────
 // Job 생성
 // ──────────────────────────────────
 async function createJob() {
-    // 홍보성 영상만 제품 이미지 필수. 정보성은 product_image_id를 null로 강제해
-    // 이전에 선택한 제품이 CTA에 새는 것을 방지한다.
-    const category = document.getElementById('category').value;
-    const contentType = category === 'cosmetics'
-        ? document.getElementById('content-type').value
-        : null;
-    if (category === 'cosmetics' && contentType === 'promo' && !window._selectedProductId) {
-        alert('홍보성 영상은 제품 이미지를 먼저 등록하고 선택해주세요.\n(주제 설정 단계에서 등록)');
-        return;
-    }
-    const productImageId = (contentType === 'info')
-        ? null
-        : (window._selectedProductId || null);
-
-    // promo_comment 분기: 이미지 프롬프트를 지금(최종 확인 시점) 생성.
-    // 음성 단계에서 분리된 expanded_sentences 기준으로 호출해야 이미지 컷 수가 일치.
-    if (contentType === 'promo_comment') {
-        const narrationForPrompts = window._expandedSentences || window._approvedNarrationLines;
-        if (!narrationForPrompts || narrationForPrompts.length === 0) {
-            alert('나레이션이 준비되지 않았습니다. 앞 단계부터 다시 진행해주세요.');
+    if (isCreatingJob) return;
+    if (!validateBeforeCreate()) return;
+    isCreatingJob = true;
+    try {
+        // 홍보성 영상만 제품 이미지 필수. 정보성은 product_image_id를 null로 강제해
+        // 이전에 선택한 제품이 CTA에 새는 것을 방지한다.
+        const category = document.getElementById('category').value;
+        const contentType = category === 'cosmetics'
+            ? document.getElementById('content-type').value
+            : null;
+        if (category === 'cosmetics' && contentType === 'promo' && !window._selectedProductId) {
+            alert('홍보성 영상은 제품 이미지를 먼저 등록하고 선택해주세요.\n(주제 설정 단계에서 등록)');
             return;
         }
-        showLoading('이미지 프롬프트 생성 중...');
+        const productImageId = (contentType === 'info')
+            ? null
+            : (window._selectedProductId || null);
+
+        // promo_comment 분기: 이미지 프롬프트를 BGM 단계 완료 시점에 생성.
+        // 음성 단계에서 분리된 expanded_sentences 기준으로 호출해야 이미지 컷 수가 일치.
+        if (contentType === 'promo_comment') {
+            const narrationForPrompts = window._expandedSentences || window._approvedNarrationLines;
+            if (!narrationForPrompts || narrationForPrompts.length === 0) {
+                alert('나레이션이 준비되지 않았습니다. 앞 단계부터 다시 진행해주세요.');
+                return;
+            }
+            showLoading('이미지 프롬프트 생성 중...');
+            try {
+                const promptResp = await authFetch('/api/generate/image-prompts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        narration_lines: narrationForPrompts,
+                        style: 'realistic',
+                        topic: document.getElementById('topic').value.trim(),
+                        ...getCategoryPayload(),
+                    }),
+                });
+                if (!promptResp.ok) {
+                    const err = await promptResp.json();
+                    throw new Error(err.detail || '이미지 프롬프트 생성 실패');
+                }
+                scriptData = await promptResp.json();
+            } catch (e) {
+                hideLoading();
+                showFriendlyError(e.message);
+                return;
+            }
+        }
+
+        if (!scriptData) return;
+
+        const payload = {
+            topic: document.getElementById('topic').value,
+            style: 'realistic',
+            video_mode: "kenburns",
+            tts_engine: document.getElementById('tts-engine').value,
+            tts_speed: parseFloat(document.getElementById('tts-speed').value),
+            voice_id: document.getElementById('tts-voice').value,
+            emotion: document.getElementById('tts-engine').value === 'typecast' ? document.getElementById('tts-emotion').value : null,
+            title: selectedTitle,
+            title_line1: titleLine1,
+            title_line2: titleLine2,
+            lines: scriptData.lines,
+            bgm_volume: parseInt(document.getElementById('bgm-volume').value) / 100,
+            bgm_filename: selectedBgm || null,
+            bgm_start_sec: parseFloat(document.getElementById('bgm-start-sec').value) || 0,
+            product_image_id: productImageId,
+            tts_session_id: window._ttsSessionId || null,
+        };
+
+        showLoading('작업 등록 중...');
+
         try {
-            const promptResp = await authFetch('/api/generate/image-prompts', {
+            const resp = await authFetch('/api/jobs/', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    narration_lines: narrationForPrompts,
-                    style: 'realistic',
-                    topic: document.getElementById('topic').value.trim(),
-                    ...getCategoryPayload(),
-                }),
+                body: JSON.stringify(payload),
             });
-            if (!promptResp.ok) {
-                const err = await promptResp.json();
-                throw new Error(err.detail || '이미지 프롬프트 생성 실패');
+
+            if (!resp.ok) {
+                const err = await resp.json();
+                throw new Error(err.detail || '작업 생성 실패');
             }
-            scriptData = await promptResp.json();
+
+            const job = await resp.json();
+            window.location.href = `/static/status.html?job=${job.job_id}&phase=images`;
         } catch (e) {
-            hideLoading();
             showFriendlyError(e.message);
-            return;
+            hideLoading();
         }
-    }
-
-    if (!scriptData) return;
-
-    const payload = {
-        topic: document.getElementById('topic').value,
-        style: 'realistic',
-        video_mode: "kenburns",
-        tts_engine: document.getElementById('tts-engine').value,
-        tts_speed: parseFloat(document.getElementById('tts-speed').value),
-        voice_id: document.getElementById('tts-voice').value,
-        emotion: document.getElementById('tts-engine').value === 'typecast' ? document.getElementById('tts-emotion').value : null,
-        title: selectedTitle,
-        title_line1: titleLine1,
-        title_line2: titleLine2,
-        lines: scriptData.lines,
-        bgm_volume: parseInt(document.getElementById('bgm-volume').value) / 100,
-        bgm_filename: selectedBgm || null,
-        bgm_start_sec: parseFloat(document.getElementById('bgm-start-sec').value) || 0,
-        product_image_id: productImageId,
-        tts_session_id: window._ttsSessionId || null,
-    };
-
-    showLoading('작업 등록 중...');
-
-    try {
-        const resp = await authFetch('/api/jobs/', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-        });
-
-        if (!resp.ok) {
-            const err = await resp.json();
-            throw new Error(err.detail || '작업 생성 실패');
-        }
-
-        const job = await resp.json();
-        window.location.href = `/static/status.html?job=${job.job_id}&phase=images`;
-    } catch (e) {
-        showFriendlyError(e.message);
-        hideLoading();
+    } finally {
+        isCreatingJob = false;
     }
 }
 
@@ -891,47 +974,53 @@ function hideStepGuide(stepId) {
 }
 
 function goToStep(stepIndex) {
+    if (stepIndex < 0 || stepIndex >= STEPS.length) {
+        console.warn(`goToStep: 범위 밖 인덱스 ${stepIndex} (유효: 0~${STEPS.length - 1})`);
+        return;
+    }
     currentStepIndex = stepIndex;
+    const stepId = STEPS[stepIndex].id;
 
-    STEPS.forEach((step, i) => {
-        const section = document.getElementById(step.id);
-        if (i === stepIndex) {
-            section.classList.remove('hidden', 'collapsed');
+    // 모드 선택 화면은 STEPS 외부의 진입 화면이라 항상 숨김
+    const modeSel = document.getElementById('step-mode-select');
+    if (modeSel) modeSel.classList.add('hidden');
+
+    // STEPS에 속하지 않는 모든 step-section은 숨김, 활성 STEP만 표시
+    document.querySelectorAll('.step-section').forEach(el => {
+        if (el.id === stepId) {
+            el.classList.remove('hidden', 'collapsed');
         } else {
-            section.classList.add('hidden');
+            el.classList.add('hidden');
         }
     });
 
-    // 제목 단계: 데이터 없으면 안내
-    if (stepIndex === 1) {
+    // step.id 기반 안내/초기화
+    if (stepId === 'step-titles') {
         if (!titleOptions) showStepGuide('step-titles', '주제를 입력하고 "제목 생성하기"를 눌러주세요.');
         else hideStepGuide('step-titles');
     }
-
-    // 나레이션 단계: 데이터 없으면 안내
-    if (stepIndex === 2) {
+    if (stepId === 'step-narration') {
         if (!narrationData) showStepGuide('step-narration', '제목 단계에서 "다음: 나레이션 생성"을 눌러주세요.');
         else hideStepGuide('step-narration');
     }
-
-    // 음성 단계: 옵션이 비어있으면 자동 로드
-    if (stepIndex === 3) {
+    if (stepId === 'step-tts') {
         const voiceSelect = document.getElementById('tts-voice');
         if (voiceSelect && voiceSelect.options.length === 0) {
             updateVoiceOptions();
         }
     }
-
-    // 확인 단계: 요약 자동 생성
-    if (stepIndex === 5) {
-        buildConfirmSummary();
+    if (stepId === 'step-bgm' && bgmList.length === 0) {
+        loadBgmList();
+    }
+    if (stepId === 'step-user-lines') {
+        renderUserLines();
     }
 
     updateTimeline();
 
     setTimeout(() => {
-        const current = document.getElementById(STEPS[stepIndex].id);
-        current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        const current = document.getElementById(stepId);
+        if (current) current.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 100);
 }
 
@@ -941,8 +1030,28 @@ function advanceToStep(stepIndex) {
     goToStep(stepIndex);
 }
 
+function stepIndexOf(id) {
+    return STEPS.findIndex(s => s.id === id);
+}
+
+function advanceToStepById(id) {
+    const idx = stepIndexOf(id);
+    if (idx >= 0) advanceToStep(idx);
+}
+
 function clickTimelineStep(stepIndex) {
     goToStep(stepIndex);
+}
+
+function renderTimelineTrack() {
+    const track = document.getElementById('timeline-track');
+    if (!track) return;
+    track.innerHTML = STEPS.map((step, i) => `
+        <li class="timeline-item${i === 0 ? ' active' : ''}" data-step="${i}" onclick="clickTimelineStep(${i})">
+            <span class="timeline-dot"></span>
+            <span class="timeline-label">${step.label}</span>
+        </li>
+    `).join('');
 }
 
 function updateTimeline() {
@@ -954,7 +1063,8 @@ function updateTimeline() {
     });
 
     const track = document.querySelector('.timeline-track');
-    const progress = maxReachedStep === 0 ? 0 : (maxReachedStep / (STEPS.length - 1)) * 100;
+    if (!track) return;
+    const progress = maxReachedStep === 0 ? 0 : (maxReachedStep / Math.max(1, STEPS.length - 1)) * 100;
     track.style.setProperty('--timeline-progress', progress + '%');
 }
 
@@ -1186,8 +1296,357 @@ function formatTime(sec) {
     return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-// 페이지 로드 시 초기화
-updateTimeline(0);
+// ──────────────────────────────────
+// 카드 A / 카드 B 모드 선택
+// ──────────────────────────────────
+function selectGenerationMode(mode) {
+    window._generationMode = mode;
+    if (mode === 'ai_full') {
+        STEPS = STEPS_AI_FULL;
+    } else if (mode === 'user_assets') {
+        STEPS = STEPS_USER_ASSETS;
+    } else {
+        return;
+    }
+    maxReachedStep = 0;
+    currentStepIndex = 0;
+    renderTimelineTrack();
+    // 모드 선택 후 타임라인 노출
+    const tl = document.getElementById('workflow-timeline');
+    if (tl) tl.classList.remove('hidden');
+    goToStep(0);
+    // 카드 B는 카테고리/promo_comment 필드를 보호 차원에서 숨김
+    if (mode === 'user_assets') {
+        document.getElementById('category').value = 'general';
+        try { toggleCategoryFields(); } catch (e) {}
+    }
+}
+
+function backToModeSelect() {
+    // 카드 B의 대본 입력 화면에서 "이전" — 모드 선택으로 돌아간다.
+    if (window._draftJobId) {
+        // draft job은 서버에 남지만 사용자가 다른 모드로 갈 수도 있으므로 클라 상태만 정리
+        window._draftJobId = null;
+        window._splitLines = [];
+    }
+    document.querySelectorAll('.step-section').forEach(el => el.classList.add('hidden'));
+    const modeSel = document.getElementById('step-mode-select');
+    if (modeSel) modeSel.classList.remove('hidden');
+    const trackEl = document.getElementById('timeline-track');
+    if (trackEl) trackEl.innerHTML = '';
+    const tl = document.getElementById('workflow-timeline');
+    if (tl) tl.classList.add('hidden');
+    window._generationMode = null;
+}
+
+function backToUserScript() {
+    goToStep(0);  // STEPS_USER_ASSETS의 0번 = step-user-script
+}
+
+// ──────────────────────────────────
+// 카드 B: 대본 입력 → 쪼개기
+// ──────────────────────────────────
+function updateUserScriptCount() {
+    const ta = document.getElementById('user-script');
+    const count = ta.value.length;
+    document.getElementById('user-script-count').textContent = count;
+    const btn = document.getElementById('btn-split-script');
+    if (btn) btn.disabled = count < 10;
+}
+
+async function splitUserScript() {
+    const ta = document.getElementById('user-script');
+    const script = ta.value.trim();
+    if (script.length < 10) {
+        alert('대본은 10자 이상 입력해주세요.');
+        return;
+    }
+
+    window._userScript = script;
+    showLoading('대본을 문장 단위로 분리하는 중...');
+
+    try {
+        const resp = await authFetch('/api/generate/split-script', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ script }),
+        });
+        if (!resp.ok) {
+            const err = await resp.json();
+            throw new Error(err.detail || '대본 쪼개기 실패');
+        }
+        const data = await resp.json();
+        window._splitLines = data.lines;
+
+        // draft Job 생성 (줄별 자산 편집을 위한 job_id 확보)
+        const draftResp = await authFetch('/api/jobs/draft', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lines: data.lines }),
+        });
+        if (!draftResp.ok) {
+            const err = await draftResp.json();
+            throw new Error(err.detail || 'Draft Job 생성 실패');
+        }
+        const draft = await draftResp.json();
+        window._draftJobId = draft.job_id;
+        // 모드 B 줄별 상태 (클라 캐시) — 'pending'|'ready'|'failed'
+        window._userLineStatuses = data.lines.map(() => 'pending');
+        // 줄별 자산 출처 (클라 캐시) — 'ai'|'image'|'clip'
+        window._userLineSources = data.lines.map(() => 'ai');
+
+        hideLoading();
+        // step-user-script 다음이 step-user-lines (인덱스 1)
+        advanceToStep(1);
+    } catch (e) {
+        hideLoading();
+        showFriendlyError(e.message);
+    }
+}
+
+// ──────────────────────────────────
+// 카드 B: 줄별 자산 편집
+// ──────────────────────────────────
+function renderUserLines() {
+    const container = document.getElementById('user-lines-list');
+    if (!container) return;
+    const lines = window._splitLines || [];
+    const sources = window._userLineSources || [];
+    const statuses = window._userLineStatuses || [];
+    const jobId = window._draftJobId;
+
+    container.innerHTML = lines.map((text, i) => {
+        const source = sources[i] || 'ai';
+        const status = statuses[i] || 'pending';
+        const failed = status === 'failed';
+        const ts = Date.now();  // 캐시 버스트
+        let slot = '';
+        if (source === 'clip' && status === 'ready') {
+            slot = `<video src="/api/jobs/${jobId}/clips/${i}?t=${ts}" autoplay muted loop playsinline></video>`;
+        } else if ((source === 'image' || source === 'ai') && status === 'ready') {
+            slot = `<img src="/api/jobs/${jobId}/images/${i}?t=${ts}" alt="">`;
+        } else if (status === 'pending') {
+            slot = `<span class="user-line-slot-empty">생성/업로드 대기</span>`;
+        } else {
+            slot = `<span class="user-line-slot-empty">실패</span>`;
+        }
+        const statusBadge = status === 'pending' ? '<div class="user-line-slot-status">대기</div>' : '';
+        return `
+            <div class="user-line-item ${failed ? 'failed' : ''}" data-line-index="${i}">
+                <div class="user-line-num">${i + 1}</div>
+                <div class="user-line-text"
+                     contenteditable="true"
+                     spellcheck="false"
+                     title="클릭해서 직접 수정 (Enter 저장, Esc 취소)"
+                     onblur="saveUserLineEdit(${i}, this)"
+                     onkeydown="handleUserLineKey(event, ${i}, this)">${escapeHtml(text)}</div>
+                <div class="user-line-slot">${slot}${statusBadge}</div>
+                <div class="user-line-buttons">
+                    <button class="btn-secondary" onclick="userLineGenerateAI(${i})">🪄 AI 이미지 생성</button>
+                    <button class="btn-secondary" onclick="userLineUploadImage(${i})">🖼 이미지 업로드</button>
+                    <button class="btn-secondary" onclick="userLineUploadClip(${i})">🎬 영상 업로드</button>
+                </div>
+                ${failed ? `<div class="fail-reason">실패: 다시 시도하거나 직접 업로드해주세요.</div>` : ''}
+            </div>
+        `;
+    }).join('');
+
+    // 상태 요약
+    const total = lines.length;
+    const ready = statuses.filter(s => s === 'ready').length;
+    const summary = document.getElementById('user-lines-status');
+    if (summary) summary.textContent = `${ready}/${total}줄 준비됨`;
+}
+
+// 줄 텍스트를 클릭 인라인 편집: blur 시 저장, Enter/Esc 키 처리
+function saveUserLineEdit(i, el) {
+    if (!window._splitLines || i < 0 || i >= window._splitLines.length) return;
+    const next = (el.innerText || '').trim();
+    if (!next) {
+        // 빈 줄 방지 → 원본 복구
+        el.innerText = window._splitLines[i];
+        return;
+    }
+    if (next === window._splitLines[i]) return;
+    window._splitLines[i] = next;
+}
+
+function handleUserLineKey(ev, i, el) {
+    if (ev.key === 'Enter' && !ev.shiftKey) {
+        ev.preventDefault();
+        el.blur();
+    } else if (ev.key === 'Escape') {
+        ev.preventDefault();
+        el.innerText = window._splitLines[i];
+        el.blur();
+    }
+}
+
+async function userLineGenerateAI(i) {
+    if (!window._draftJobId) return;
+    window._userLineStatuses[i] = 'pending';
+    window._userLineSources[i] = 'ai';
+    renderUserLines();
+    try {
+        const resp = await authFetch(`/api/jobs/${window._draftJobId}/regenerate-image/${i}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+        if (!resp.ok) {
+            const err = await resp.json();
+            throw new Error(err.detail || 'AI 이미지 생성 실패');
+        }
+        // 서버 SSE 또는 폴링 대신, 간단히 polling으로 줄별 status 확인
+        pollUserLineStatus(i);
+    } catch (e) {
+        window._userLineStatuses[i] = 'failed';
+        renderUserLines();
+        showFriendlyError(e.message);
+    }
+}
+
+function userLineUploadImage(i) {
+    if (!window._draftJobId) return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/png,image/jpeg,image/webp';
+    input.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const formData = new FormData();
+        formData.append('file', file);
+        window._userLineStatuses[i] = 'pending';
+        renderUserLines();
+        try {
+            const resp = await authFetch(`/api/jobs/${window._draftJobId}/upload-image/${i}`, {
+                method: 'POST',
+                body: formData,
+            });
+            if (!resp.ok) {
+                const err = await resp.json();
+                throw new Error(err.detail || '이미지 업로드 실패');
+            }
+            window._userLineStatuses[i] = 'ready';
+            window._userLineSources[i] = 'image';
+            renderUserLines();
+        } catch (err) {
+            window._userLineStatuses[i] = 'failed';
+            renderUserLines();
+            alert('업로드 실패: ' + err.message);
+        }
+    };
+    input.click();
+}
+
+function userLineUploadClip(i) {
+    if (!window._draftJobId) return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'video/mp4,video/quicktime,video/webm,video/x-msvideo';
+    input.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const formData = new FormData();
+        formData.append('file', file);
+        window._userLineStatuses[i] = 'pending';
+        renderUserLines();
+        try {
+            const resp = await authFetch(`/api/jobs/${window._draftJobId}/upload-clip/${i}`, {
+                method: 'POST',
+                body: formData,
+            });
+            if (!resp.ok) {
+                const err = await resp.json();
+                throw new Error(err.detail || '영상 업로드 실패');
+            }
+            window._userLineStatuses[i] = 'ready';
+            window._userLineSources[i] = 'clip';
+            renderUserLines();
+        } catch (err) {
+            window._userLineStatuses[i] = 'failed';
+            renderUserLines();
+            alert('업로드 실패: ' + err.message);
+        }
+    };
+    input.click();
+}
+
+async function batchGenerateMissingImages() {
+    if (!window._draftJobId) return;
+    const missing = window._userLineSources.map((s, i) => (s === 'ai' && window._userLineStatuses[i] !== 'ready') ? i : -1).filter(i => i >= 0);
+    if (missing.length === 0) {
+        alert('비어 있는 줄이 없습니다.');
+        return;
+    }
+    try {
+        const resp = await authFetch(`/api/jobs/${window._draftJobId}/generate-missing-images`, {
+            method: 'POST',
+        });
+        if (!resp.ok) {
+            const err = await resp.json();
+            throw new Error(err.detail || '일괄 생성 실패');
+        }
+        const data = await resp.json();
+        (data.queued || []).forEach(i => {
+            window._userLineStatuses[i] = 'pending';
+            pollUserLineStatus(i);
+        });
+        renderUserLines();
+    } catch (e) {
+        showFriendlyError(e.message);
+    }
+}
+
+async function pollUserLineStatus(i) {
+    // 이미지 파일 존재로 줄별 상태를 단순 폴링한다.
+    if (!window._draftJobId) return;
+    const jobId = window._draftJobId;
+    const maxTries = 60;  // ~120초
+    for (let n = 0; n < maxTries; n++) {
+        await new Promise(r => setTimeout(r, 2000));
+        // 진행 중 다른 모드로 빠졌으면 중단
+        if (window._draftJobId !== jobId) return;
+        try {
+            const r = await authFetch(`/api/jobs/${jobId}`);
+            if (!r.ok) continue;
+            const job = await r.json();
+            // 상태 자체보다는 이미지 URL HEAD로 확인
+            const head = await fetch(`/api/jobs/${jobId}/images/${i}?t=${Date.now()}`, { method: 'HEAD' });
+            if (head.ok) {
+                window._userLineStatuses[i] = 'ready';
+                window._userLineSources[i] = 'ai';
+                renderUserLines();
+                return;
+            }
+        } catch (e) { /* 폴링 실패는 무시 */ }
+    }
+    // 타임아웃: 한 줄 실패로 처리
+    window._userLineStatuses[i] = 'failed';
+    renderUserLines();
+}
+
+async function proceedToTtsFromUserLines() {
+    // 모든 줄이 준비됐는지 검증
+    const lines = window._splitLines || [];
+    const statuses = window._userLineStatuses || [];
+    const missing = lines.map((_, i) => statuses[i] !== 'ready' ? i : -1).filter(i => i >= 0);
+    if (missing.length > 0) {
+        alert(`${missing.length}개 줄의 자산이 아직 준비되지 않았습니다. (예: ${missing[0] + 1}번)`);
+        return;
+    }
+    // 카드 A의 validateBeforeCreate 통과를 위해 narration 흐름 채움
+    window._approvedNarrationLines = lines.slice();
+    selectedTitle = '';
+    titleLine1 = '';
+    titleLine2 = '';
+    advanceToStep(2);  // STEPS_USER_ASSETS의 2번 = step-tts
+}
+
+// ──────────────────────────────────
+// 페이지 로드 초기화
+// ──────────────────────────────────
 loadBgmList();
 loadUserProducts();
 toggleCategoryFields();  // 카테고리 + 영상 목적 UI 초기 상태 세팅
+// 모드 선택 화면이 진입 화면. STEPS 타임라인은 모드 선택 후 렌더링된다.

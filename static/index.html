@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Shorts Pick</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=4">
+    <link rel="stylesheet" href="/static/css/style.css?v=7">
 </head>
 <body class="has-navbar">
     <script>if(localStorage.getItem('theme')==='dark'||!localStorage.getItem('theme'))document.body.classList.add('dark');</script>
@@ -18,38 +18,33 @@
 
     <div class="container" style="padding-top: 20px;">
 
-        <!-- 타임라인 -->
-        <nav id="workflow-timeline" class="timeline">
-            <ol class="timeline-track">
-                <li class="timeline-item active" data-step="0" onclick="clickTimelineStep(0)">
-                    <span class="timeline-dot"></span>
-                    <span class="timeline-label">주제</span>
-                </li>
-                <li class="timeline-item" data-step="1" onclick="clickTimelineStep(1)">
-                    <span class="timeline-dot"></span>
-                    <span class="timeline-label">제목</span>
-                </li>
-                <li class="timeline-item" data-step="2" onclick="clickTimelineStep(2)">
-                    <span class="timeline-dot"></span>
-                    <span class="timeline-label">나레이션</span>
-                </li>
-                <li class="timeline-item" data-step="3" onclick="clickTimelineStep(3)">
-                    <span class="timeline-dot"></span>
-                    <span class="timeline-label">음성</span>
-                </li>
-                <li class="timeline-item" data-step="4" onclick="clickTimelineStep(4)">
-                    <span class="timeline-dot"></span>
-                    <span class="timeline-label">BGM</span>
-                </li>
-                <li class="timeline-item" data-step="5" onclick="clickTimelineStep(5)">
-                    <span class="timeline-dot"></span>
-                    <span class="timeline-label">확인</span>
-                </li>
-            </ol>
+        <!-- 타임라인 (JS가 활성 모드 STEPS로 동적 렌더; 모드 선택 전엔 숨김) -->
+        <nav id="workflow-timeline" class="timeline hidden">
+            <ol class="timeline-track" id="timeline-track"></ol>
         </nav>
 
+        <!-- Step 0: 모드 선택 (진입 화면) -->
+        <section id="step-mode-select" class="card step-section" data-step-id="step-mode-select">
+            <div class="step-body">
+                <h2>어떻게 만들까요?</h2>
+                <p class="subtitle">대본·이미지·영상을 AI에 맡길지, 직접 제공할지 골라주세요.</p>
+                <div class="mode-card-grid">
+                    <div class="mode-card" onclick="selectGenerationMode('ai_full')">
+                        <div class="mode-card-emoji">🤖</div>
+                        <h3>AI가 모두 생성</h3>
+                        <p>주제만 입력하면 제목·나레이션·이미지·영상까지 AI가 자동으로 만들어줍니다.</p>
+                    </div>
+                    <div class="mode-card" onclick="selectGenerationMode('user_assets')">
+                        <div class="mode-card-emoji">✍️</div>
+                        <h3>내가 직접 제공</h3>
+                        <p>이미 가지고 있는 대본을 입력하고, 줄마다 이미지·영상을 올리거나 AI에 맡길 수 있어요.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- Step 1: 주제 설정 -->
-        <section id="step-input" class="card step-section" data-step-index="0">
+        <section id="step-input" class="card hidden step-section" data-step-id="step-input">
             <div class="step-body">
                 <h2>1. 주제 설정</h2>
 
@@ -115,14 +110,14 @@
                     </div>
                 </div>
 
-                <button id="btn-generate" class="btn-primary" onclick="generateTitles()">
+                <button id="btn-generate" class="btn-primary" onclick="generateTitles()" disabled>
                     제목 생성하기
                 </button>
             </div>
         </section>
 
         <!-- Step 2: 제목 선택 -->
-        <section id="step-titles" class="card hidden step-section" data-step-index="1">
+        <section id="step-titles" class="card hidden step-section" data-step-id="step-titles">
             <div class="step-body">
                 <h2>2. 제목 선택</h2>
                 <p class="subtitle">마음에 드는 제목을 클릭하세요</p>
@@ -156,7 +151,7 @@
         </section>
 
         <!-- Step 3: 나레이션 확인 -->
-        <section id="step-narration" class="card hidden step-section" data-step-index="2">
+        <section id="step-narration" class="card hidden step-section" data-step-id="step-narration">
             <div class="step-body">
                 <h2>3. 나레이션 확인</h2>
                 <div class="form-group">
@@ -172,7 +167,7 @@
         </section>
 
         <!-- Step 4: TTS 설정 -->
-        <section id="step-tts" class="card hidden step-section" data-step-index="3">
+        <section id="step-tts" class="card hidden step-section" data-step-id="step-tts">
             <div class="step-body">
                 <h2>4. 음성 설정</h2>
 
@@ -217,7 +212,7 @@
         </section>
 
         <!-- Step 5: BGM 설정 -->
-        <section id="step-bgm" class="card hidden step-section" data-step-index="4">
+        <section id="step-bgm" class="card hidden step-section" data-step-id="step-bgm">
             <div class="step-body">
                 <h2>5. BGM 설정</h2>
 
@@ -250,23 +245,47 @@
                     </div>
                 </div>
 
-                <button class="btn-primary" onclick="confirmBgmSettings()">다음: 최종 확인</button>
+                <button class="btn-primary" onclick="startCreateFromBgm()">이미지 생성 시작</button>
             </div>
         </section>
 
-        <!-- Step 6: 최종 확인 -->
-        <section id="step-confirm" class="card hidden step-section" data-step-index="5">
+        <!-- 카드 B: 대본 입력 -->
+        <section id="step-user-script" class="card hidden step-section" data-step-id="step-user-script">
             <div class="step-body">
-                <h2>6. 최종 확인</h2>
+                <h2>대본 입력</h2>
+                <p class="subtitle">미리 준비한 대본을 그대로 붙여 넣어주세요. 문장 끝(마침표·물음표·느낌표) 또는 줄바꿈을 기준으로 자동으로 분리됩니다.</p>
+                <div class="form-group">
+                    <label for="user-script">대본</label>
+                    <textarea id="user-script" rows="10" maxlength="5000" placeholder="여기에 대본을 입력하거나 붙여넣기 하세요 (최대 5000자)." oninput="updateUserScriptCount()"></textarea>
+                    <p class="field-help"><span id="user-script-count">0</span>자 / 최대 5000자</p>
+                </div>
+                <div class="btn-group">
+                    <button class="btn-secondary" onclick="backToModeSelect()">이전</button>
+                    <button class="btn-primary" id="btn-split-script" onclick="splitUserScript()" disabled>대본 쪼개기</button>
+                </div>
+            </div>
+        </section>
 
-                <div id="confirm-summary"></div>
-                <button class="btn-primary" onclick="createJob()">이미지 생성 시작</button>
+        <!-- 카드 B: 줄별 자산 편집 -->
+        <section id="step-user-lines" class="card hidden step-section" data-step-id="step-user-lines">
+            <div class="step-body">
+                <h2>줄별 자산 편집</h2>
+                <p class="subtitle">각 줄에 사용할 이미지나 영상을 올려주세요. 비어 있는 줄은 AI가 이미지를 만들어줍니다.</p>
+                <div class="batch-actions">
+                    <button class="btn-secondary" onclick="batchGenerateMissingImages()">🪄 비어 있는 줄 일괄 AI 생성</button>
+                    <span class="text-dim" id="user-lines-status"></span>
+                </div>
+                <div id="user-lines-list" class="user-lines-list"></div>
+                <div class="btn-group">
+                    <button class="btn-secondary" onclick="backToUserScript()">이전 (대본 다시)</button>
+                    <button class="btn-primary" onclick="proceedToTtsFromUserLines()">다음: 음성 설정</button>
+                </div>
             </div>
         </section>
 
     </div>
 
     <script src="/static/js/auth.js"></script>
-    <script src="/static/js/app.js?v=14"></script>
+    <script src="/static/js/app.js?v=17"></script>
 </body>
 </html>

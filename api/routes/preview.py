@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Path, Request, UploadFile, File
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Literal
 from sqlalchemy.orm import Session
 from api.models import PreviewResponse, ClipPreviewResponse, ScriptLine
 from api.deps import get_approved_user, get_user_job
@@ -14,8 +14,42 @@ from PIL import Image, ImageOps
 import json
 import os
 import io
+import subprocess
 
 router = APIRouter(prefix="/api/jobs", tags=["preview"])
+
+
+def _ffprobe_duration(path: str) -> float:
+    """영상 길이(초). 실패 시 0.0."""
+    try:
+        cmd = (
+            f'ffprobe -v error -show_entries format=duration '
+            f'-of default=noprint_wrappers=1:nokey=1 "{path}"'
+        )
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip():
+            return float(result.stdout.strip())
+    except Exception:
+        pass
+    return 0.0
+
+
+def _set_line_source(job: Job, line_index: int, source: Literal["ai", "image", "clip"], *, status: str = "ready", fail_reason: Optional[str] = None) -> None:
+    """줄별 자산 출처와 상태를 Job에 기록. 호출 측에서 db.commit() 필요."""
+    sources = json.loads(job.line_sources_json or "[]")
+    lines = json.loads(job.script_json or "[]")
+    n = len(lines)
+    # 길이 보정
+    if len(sources) < n:
+        sources = sources + ["ai"] * (n - len(sources))
+    elif len(sources) > n:
+        sources = sources[:n]
+    if 0 <= line_index < n:
+        sources[line_index] = source
+        lines[line_index]["status"] = status
+        lines[line_index]["fail_reason"] = fail_reason
+    job.line_sources_json = json.dumps(sources, ensure_ascii=False)
+    job.script_json = json.dumps(lines, ensure_ascii=False)
 
 
 @router.get("/{job_id}/preview", response_model=PreviewResponse)
@@ -43,8 +77,11 @@ async def confirm_and_render(
     db: Session = Depends(get_db),
     _user: User = Depends(get_approved_user),
 ):
-    """미리보기 확인 → AI 영상이면 클립 생성, Ken Burns면 바로 영상 조립"""
-    # Request body에서 video_mode 직접 읽기
+    """미리보기 확인 → AI 영상이면 클립 생성, Ken Burns면 바로 영상 조립.
+
+    카드 B(generation_mode == 'user_assets')일 때는 body에 voice_id, bgm 등
+    음성/BGM 설정이 함께 전송된다. 이 시점에서 Job을 보강하고 자산 실재를 검증한다.
+    """
     try:
         body = await request.json()
     except Exception:
@@ -56,7 +93,69 @@ async def confirm_and_render(
     if job.status not in ("preview_ready", "awaiting_confirmation"):
         raise HTTPException(status_code=400, detail=f"확정 불가 (상태: {job.status})")
 
-    # 미리보기에서 선택한 영상 모드를 DB에 저장
+    # ─── 카드 B 분기: 자산 실재 검증 + 음성/BGM 설정 흡수 ───
+    if job.generation_mode == "user_assets":
+        lines = json.loads(job.script_json or "[]")
+        sources = json.loads(job.line_sources_json or "[]")
+        if len(sources) != len(lines):
+            raise HTTPException(status_code=400, detail="줄별 자산 정보가 올바르지 않습니다")
+
+        job_dir = os.path.join(settings.STORAGE_DIR, job_id)
+        for i, src in enumerate(sources):
+            if src == "clip":
+                p = os.path.join(job_dir, "clips", f"clip_raw_{i:02d}.mp4")
+                if not os.path.exists(p):
+                    raise HTTPException(status_code=400, detail=f"{i + 1}번째 줄에 영상이 없습니다")
+            else:  # "ai" or "image"
+                p = os.path.join(job_dir, "images", f"img_{i:02d}.png")
+                if not os.path.exists(p):
+                    raise HTTPException(status_code=400, detail=f"{i + 1}번째 줄에 이미지가 없습니다")
+
+        # 음성/BGM 설정 흡수
+        job.video_mode = "kenburns"  # 카드 B는 ai_clips 경로 미사용 (사용자 업로드 영상은 별도 분기)
+        if body.get("voice_id"):
+            job.voice_id = body["voice_id"]
+        if body.get("tts_engine"):
+            job.tts_engine = body["tts_engine"]
+        if body.get("tts_speed") is not None:
+            job.tts_speed = float(body["tts_speed"])
+        if body.get("emotion") is not None:
+            job.emotion = body["emotion"]
+        if body.get("tts_session_id"):
+            job.tts_session_id = body["tts_session_id"]
+        if body.get("bgm_filename") is not None:
+            job.bgm_filename = body["bgm_filename"]
+        if body.get("bgm_start_sec") is not None:
+            job.bgm_start_sec = float(body["bgm_start_sec"])
+        if body.get("bgm_volume") is not None:
+            job.bgm_volume = float(body["bgm_volume"])
+        if body.get("title_line1") is not None:
+            job.title_line1 = body["title_line1"]
+        if body.get("title_line2") is not None:
+            job.title_line2 = body["title_line2"]
+
+        # TTS 세션 디렉터리가 별도에 있으면 job_dir/tts/로 이동
+        if job.tts_session_id:
+            tts_session_dir = os.path.join(settings.STORAGE_DIR, "tts_sessions", job.tts_session_id)
+            if os.path.exists(tts_session_dir):
+                import shutil
+                tts_dst = os.path.join(job_dir, "tts")
+                os.makedirs(tts_dst, exist_ok=True)
+                try:
+                    for fname in os.listdir(tts_session_dir):
+                        shutil.move(os.path.join(tts_session_dir, fname), os.path.join(tts_dst, fname))
+                    os.rmdir(tts_session_dir)
+                except Exception as e:
+                    job.tts_session_id = None
+                    print(f"[confirm user_assets] TTS 세션 이동 실패, 재생성 경로로 폴백: {e}")
+
+        job.status = "awaiting_confirmation"
+        job.current_step = "영상 제작 준비 중..."
+        db.commit()
+        background_tasks.add_task(_render_video_task, job_id)
+        return {"message": "영상 제작을 시작합니다", "job_id": job_id, "next": "render"}
+
+    # ─── 카드 A: 기존 흐름 ───
     job.video_mode = video_mode
 
     if video_mode in ("hailuo", "hailuo23", "wan", "kling", "veo", "veo_lite"):
@@ -89,18 +188,69 @@ async def regenerate_image(
     db: Session = Depends(get_db),
     _user: User = Depends(get_approved_user),
 ):
-    """특정 이미지 재생성 (한글 요청어 → 영어 프롬프트 변환)"""
+    """특정 이미지 재생성 (한글 요청어 → 영어 프롬프트 변환).
+
+    카드 B에서는 Job 전체 상태를 바꾸지 않는다(한 줄 실패가 Job 전체 실패로 번지면 안 됨).
+    """
     job = get_user_job(db, job_id, _user)
 
     lines = json.loads(job.script_json)
     if line_index < 0 or line_index >= len(lines):
         raise HTTPException(status_code=400, detail="잘못된 이미지 인덱스")
 
-    job.status = "regenerating_image"
-    db.commit()
+    if job.generation_mode != "user_assets":
+        job.status = "regenerating_image"
+        db.commit()
+    else:
+        # 줄별 상태만 'pending'으로 표시 (UI에 로딩 스피너 등)
+        lines[line_index]["status"] = "pending"
+        lines[line_index]["fail_reason"] = None
+        job.script_json = json.dumps(lines, ensure_ascii=False)
+        db.commit()
 
     background_tasks.add_task(_regenerate_single_image, job_id, line_index, body.korean_request, body.english_prompt)
     return {"message": f"이미지 {line_index + 1} 재생성 시작"}
+
+
+@router.post("/{job_id}/generate-missing-images")
+async def generate_missing_images(
+    job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
+    background_tasks: BackgroundTasks = None,
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_approved_user),
+):
+    """카드 B 전용: line_sources가 'ai'이고 이미지 파일이 없는 줄을 일괄 생성한다."""
+    job = get_user_job(db, job_id, _user)
+    if job.generation_mode != "user_assets":
+        raise HTTPException(status_code=400, detail="이 작업은 카드 B 모드가 아닙니다")
+
+    lines = json.loads(job.script_json or "[]")
+    sources = json.loads(job.line_sources_json or "[]")
+    if len(sources) != len(lines):
+        raise HTTPException(status_code=400, detail="줄별 자산 정보가 올바르지 않습니다")
+
+    job_dir = os.path.join(settings.STORAGE_DIR, job_id)
+    images_dir = os.path.join(job_dir, "images")
+    os.makedirs(images_dir, exist_ok=True)
+
+    queued = []
+    for i, src in enumerate(sources):
+        if src != "ai":
+            continue
+        img_path = os.path.join(images_dir, f"img_{i:02d}.png")
+        if os.path.exists(img_path):
+            continue
+        queued.append(i)
+        lines[i]["status"] = "pending"
+        lines[i]["fail_reason"] = None
+
+    job.script_json = json.dumps(lines, ensure_ascii=False)
+    db.commit()
+
+    for i in queued:
+        background_tasks.add_task(_regenerate_single_image, job_id, i, None, None)
+
+    return {"queued": queued}
 
 
 @router.post("/{job_id}/upload-image/{line_index}")
@@ -150,6 +300,17 @@ async def upload_image(
     output_path = os.path.join(settings.STORAGE_DIR, job_id, "images", f"img_{line_index:02d}.png")
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     img.save(output_path, "PNG")
+
+    # 카드 B: 줄별 자산 출처/상태 갱신 + 이전 클립 파일 정리
+    if job.generation_mode == "user_assets":
+        prev_clip = os.path.join(settings.STORAGE_DIR, job_id, "clips", f"clip_raw_{line_index:02d}.mp4")
+        if os.path.exists(prev_clip):
+            try:
+                os.remove(prev_clip)
+            except Exception:
+                pass
+        _set_line_source(job, line_index, "image", status="ready")
+        db.commit()
 
     from core.r2_storage import upload_file as r2_upload, is_r2_enabled
     if is_r2_enabled():
@@ -299,9 +460,6 @@ async def upload_clip(
             f.write(contents)
     else:
         # MOV/WebM/AVI → FFmpeg로 MP4 변환
-        import subprocess
-        import tempfile
-
         ext = {
             "video/quicktime": ".mov",
             "video/webm": ".webm",
@@ -320,6 +478,26 @@ async def upload_clip(
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
+
+    # 영상 최소 길이 검사 (0.5초 미만 거부) — TTS 길이와의 정밀 비교는 조립 단계에서 수행
+    duration = _ffprobe_duration(output_path)
+    if duration < 0.5:
+        try:
+            os.remove(output_path)
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail=f"영상이 너무 짧습니다 ({duration:.2f}초). 1초 이상 영상을 올려주세요.")
+
+    # 카드 B: 줄별 자산 출처/상태 갱신 + 이전 이미지 파일 정리
+    if job.generation_mode == "user_assets":
+        prev_img = os.path.join(settings.STORAGE_DIR, job_id, "images", f"img_{line_index:02d}.png")
+        if os.path.exists(prev_img):
+            try:
+                os.remove(prev_img)
+            except Exception:
+                pass
+        _set_line_source(job, line_index, "clip", status="ready")
+        db.commit()
 
     from core.r2_storage import upload_file as r2_upload, is_r2_enabled
     clip_output = os.path.join(clips_dir, f"clip_raw_{line_index:02d}.mp4")

@@ -6,6 +6,7 @@ from api.models import (
     TitleRequest, TitleResponse,
     NarrationRequest, NarrationResponse,
     ImagePromptRequest, ImagePromptResponse,
+    SplitScriptRequest, SplitScriptResponse,
 )
 from api.deps import get_approved_user, resolve_user_api_keys
 from db.database import get_db
@@ -61,6 +62,17 @@ async def generate_narration_endpoint(request: NarrationRequest, db: Session = D
         tb = traceback.format_exc()
         print(f"[ERROR] 나레이션 생성 실패:\n{tb}")
         raise HTTPException(status_code=500, detail=f"나레이션 생성 실패: {repr(e)}")
+
+
+@router.post("/split-script", response_model=SplitScriptResponse)
+async def split_script_endpoint(request: SplitScriptRequest, _user: User = Depends(get_approved_user)):
+    """카드 B 전용: 사용자 대본을 문장 단위로 쪼갠다. 원문 100% 보존(정규식 처리, AI 미사용)."""
+    from core.line_splitter import split_user_script_by_sentence
+
+    lines = split_user_script_by_sentence(request.script)
+    if not lines:
+        raise HTTPException(status_code=400, detail="분리 가능한 문장이 없습니다. 대본을 확인해주세요.")
+    return SplitScriptResponse(lines=lines)
 
 
 @router.post("/image-prompts", response_model=ImagePromptResponse)

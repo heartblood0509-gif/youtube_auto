@@ -1,7 +1,7 @@
 """Pydantic 요청/응답 스키마"""
 
-from pydantic import BaseModel, Field
-from typing import Optional
+from pydantic import BaseModel, Field, model_validator
+from typing import Optional, Literal
 from enum import Enum
 import datetime
 
@@ -102,8 +102,11 @@ class ImagePromptRequest(BaseModel):
 
 class ScriptLine(BaseModel):
     text: str
-    image_prompt: str
-    motion: MotionType
+    image_prompt: str = ""
+    motion: MotionType = MotionType.ZOOM_IN
+    # 카드 B에서 사용: 줄별 자산 상태 ("pending" | "ready" | "failed")
+    status: Literal["pending", "ready", "failed"] = "pending"
+    fail_reason: Optional[str] = None
 
 
 class ImagePromptResponse(BaseModel):
@@ -111,14 +114,14 @@ class ImagePromptResponse(BaseModel):
 
 
 class JobCreateRequest(BaseModel):
-    topic: str
-    style: StylePreset
+    topic: str = ""
+    style: StylePreset = StylePreset.REALISTIC
     video_mode: VideoMode = VideoMode.KENBURNS
     tts_engine: TTSEngine = TTSEngine.TYPECAST
     tts_speed: float = Field(default=1.0, ge=0.5, le=2.0)
     voice_id: Optional[str] = None
     emotion: Optional[str] = None
-    title: str
+    title: Optional[str] = ""
     title_line1: Optional[str] = None
     title_line2: Optional[str] = None
     lines: list[ScriptLine]
@@ -128,6 +131,37 @@ class JobCreateRequest(BaseModel):
     product_image_id: Optional[str] = None
     # 음성 단계에서 사전 생성된 TTS 세션 ID (있으면 영상 조립 시 재사용)
     tts_session_id: Optional[str] = None
+    # 카드 A("AI가 모두 생성") vs 카드 B("사용자 직접 제공") 분기
+    generation_mode: Literal["ai_full", "user_assets"] = "ai_full"
+    # 카드 B: 줄별 자산 출처. ["ai"|"image"|"clip", ...] 길이는 lines와 일치해야 함.
+    line_sources: list[Literal["ai", "image", "clip"]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_mode_b(self):
+        if self.generation_mode == "user_assets":
+            if len(self.line_sources) != len(self.lines):
+                raise ValueError("line_sources 길이가 lines 길이와 일치해야 합니다")
+        return self
+
+
+# ── 카드 B 전용 ──
+
+class SplitScriptRequest(BaseModel):
+    """자유 길이 사용자 대본을 문장 단위로 쪼개기 요청."""
+    script: str = Field(..., min_length=10, max_length=5000)
+
+
+class SplitScriptResponse(BaseModel):
+    lines: list[str]
+
+
+class DraftJobRequest(BaseModel):
+    """카드 B용 draft Job 생성 요청 (쪼개진 대본 보유)."""
+    lines: list[str] = Field(..., min_length=1, max_length=50)
+
+
+class DraftJobResponse(BaseModel):
+    job_id: str
 
 
 class TtsPreviewBuildRequest(BaseModel):
