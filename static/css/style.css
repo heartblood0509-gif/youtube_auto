@@ -1409,7 +1409,8 @@ input[type="range"] {
 }
 
 /* 제목 분할 편집 레이아웃 */
-#title-split-editor {
+#title-split-editor,
+.title-edit-box {
     margin-top: 16px;
     padding: 16px;
     background: var(--surface);
@@ -1417,7 +1418,8 @@ input[type="range"] {
     border-radius: 10px;
 }
 
-#title-split-editor>label {
+#title-split-editor>label,
+.title-edit-box>label {
     display: block;
     font-weight: 600;
     margin-bottom: 4px;

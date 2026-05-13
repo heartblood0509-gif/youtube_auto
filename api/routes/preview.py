@@ -133,6 +133,10 @@ async def confirm_and_render(
             job.title_line1 = body["title_line1"]
         if body.get("title_line2") is not None:
             job.title_line2 = body["title_line2"]
+        # title이 비어 있으면 video_assembler.py:306의 조건(if title_text and font_title)을
+        # 통과하지 못해 제목 자체가 영상에 안 박힌다. 카드 B draft는 title=""로 시작하므로 여기서 흡수.
+        if body.get("title") is not None:
+            job.title = body["title"]
 
         # TTS 세션 디렉터리가 별도에 있으면 job_dir/tts/로 이동
         if job.tts_session_id:
