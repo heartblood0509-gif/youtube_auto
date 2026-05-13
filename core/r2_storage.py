@@ -140,6 +140,46 @@ def r2_file_exists(r2_key: str) -> bool:
         return False
 
 
+# ── 객체 단위 복사/삭제 (카드 분할 시 인덱스 시프트용) ──
+
+async def copy_object(src_key: str, dst_key: str) -> bool:
+    """R2 객체 복사. is_r2_enabled() 거짓이면 True 반환 후 no-op."""
+    if not is_r2_enabled():
+        return True
+
+    def _sync():
+        client = get_r2_client()
+        client.copy_object(
+            Bucket=settings.R2_BUCKET_NAME,
+            CopySource={"Bucket": settings.R2_BUCKET_NAME, "Key": src_key},
+            Key=dst_key,
+        )
+        return True
+
+    try:
+        return await asyncio.to_thread(_sync)
+    except Exception as e:
+        logger.warning(f"R2 copy_object 실패 {src_key} → {dst_key}: {e}")
+        return False
+
+
+async def delete_object(r2_key: str) -> bool:
+    """R2 객체 단일 삭제. is_r2_enabled() 거짓이면 True 반환 후 no-op."""
+    if not is_r2_enabled():
+        return True
+
+    def _sync():
+        client = get_r2_client()
+        client.delete_object(Bucket=settings.R2_BUCKET_NAME, Key=r2_key)
+        return True
+
+    try:
+        return await asyncio.to_thread(_sync)
+    except Exception as e:
+        logger.warning(f"R2 delete_object 실패 {r2_key}: {e}")
+        return False
+
+
 # ── 삭제 ──
 
 async def delete_job_files(job_id: str):

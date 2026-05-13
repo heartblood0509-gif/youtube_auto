@@ -5,18 +5,52 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, Literal
 from sqlalchemy.orm import Session
-from api.models import PreviewResponse, ClipPreviewResponse, ScriptLine
+from api.models import (
+    PreviewResponse,
+    ClipPreviewResponse,
+    ScriptLine,
+    SplitLineRequest,
+    SplitLineResponse,
+    EditLineRequest,
+)
 from api.deps import get_approved_user, get_user_job
 from db.database import get_db
 from db.models import Job, User
 from config import settings
 from PIL import Image, ImageOps
+import asyncio
 import json
 import os
 import io
+import logging
 import subprocess
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/jobs", tags=["preview"])
+
+
+# ── 카드 B: 진행 중인 AI 이미지 생성 추적 (분할 시 경쟁 가드용) ──
+_AI_IN_FLIGHT: dict[str, set[int]] = {}
+_AI_IN_FLIGHT_LOCK = asyncio.Lock()
+
+
+async def _mark_ai_started(job_id: str, line_index: int) -> None:
+    async with _AI_IN_FLIGHT_LOCK:
+        _AI_IN_FLIGHT.setdefault(job_id, set()).add(line_index)
+
+
+async def _mark_ai_finished(job_id: str, line_index: int) -> None:
+    async with _AI_IN_FLIGHT_LOCK:
+        s = _AI_IN_FLIGHT.get(job_id)
+        if s:
+            s.discard(line_index)
+            if not s:
+                _AI_IN_FLIGHT.pop(job_id, None)
+
+
+def _ai_in_flight_count(job_id: str) -> int:
+    return len(_AI_IN_FLIGHT.get(job_id, set()))
 
 
 def _ffprobe_duration(path: str) -> float:
@@ -50,6 +84,124 @@ def _set_line_source(job: Job, line_index: int, source: Literal["ai", "image", "
         lines[line_index]["fail_reason"] = fail_reason
     job.line_sources_json = json.dumps(sources, ensure_ascii=False)
     job.script_json = json.dumps(lines, ensure_ascii=False)
+
+
+# ─────────────────────────────────────
+# 카드 B: 카드 안에서 Enter로 줄 분할 + 텍스트 sync
+# ─────────────────────────────────────
+
+
+@router.post("/{job_id}/split-line", response_model=SplitLineResponse)
+async def split_line(
+    body: SplitLineRequest,
+    job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_approved_user),
+):
+    """카드 B 전용: line_index 위치를 before/after 두 줄로 분리. 이후 인덱스 자산 파일은 +1 시프트."""
+    job = get_user_job(db, job_id, _user)
+    if job.generation_mode != "user_assets":
+        raise HTTPException(status_code=400, detail="이 작업은 카드 B 모드가 아닙니다")
+    if job.status != "preview_ready":
+        raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
+    if _ai_in_flight_count(job_id) > 0:
+        raise HTTPException(status_code=409, detail="AI 이미지 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
+
+    lines = json.loads(job.script_json or "[]")
+    sources = json.loads(job.line_sources_json or "[]")
+    n = len(lines)
+    if len(sources) != n:
+        raise HTTPException(status_code=400, detail="줄별 자산 정보가 올바르지 않습니다")
+    if not (0 <= body.line_index < n):
+        raise HTTPException(status_code=400, detail="잘못된 줄 인덱스")
+
+    L = body.line_index
+    cur = lines[L]
+    first = {**cur, "text": body.before}
+    second = {
+        "text": body.after,
+        "image_prompt": "",
+        "motion": "zoom_in",
+        "status": "pending",
+        "fail_reason": None,
+    }
+    new_lines = lines[:L] + [first, second] + lines[L + 1:]
+    new_sources = sources[:L] + [sources[L], "ai"] + sources[L + 1:]
+
+    # 자산 파일 시프트 — 역순으로 (높은 인덱스부터)
+    job_dir = os.path.join(settings.STORAGE_DIR, job_id)
+    renames: list[tuple[str, str]] = []
+    try:
+        for i in range(n - 1, L, -1):
+            for sub, fname_old, fname_new in (
+                ("images", f"img_{i:02d}.png", f"img_{i + 1:02d}.png"),
+                ("clips", f"clip_raw_{i:02d}.mp4", f"clip_raw_{i + 1:02d}.mp4"),
+            ):
+                src = os.path.join(job_dir, sub, fname_old)
+                if not os.path.exists(src):
+                    continue
+                dst = os.path.join(job_dir, sub, fname_new)
+                os.rename(src, dst)
+                renames.append((src, dst))
+    except OSError as e:
+        for src, dst in reversed(renames):
+            try:
+                os.rename(dst, src)
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"자산 파일 시프트 실패: {e}")
+
+    # R2 시프트 (활성화된 경우, best-effort)
+    from core.r2_storage import copy_object as r2_copy, delete_object as r2_delete, is_r2_enabled
+    if is_r2_enabled():
+        try:
+            for i in range(n - 1, L, -1):
+                for sub, fname_old, fname_new in (
+                    ("images", f"img_{i:02d}.png", f"img_{i + 1:02d}.png"),
+                    ("clips", f"clip_raw_{i:02d}.mp4", f"clip_raw_{i + 1:02d}.mp4"),
+                ):
+                    # 로컬에서 시프트된 항목만 R2도 시프트
+                    if not os.path.exists(os.path.join(job_dir, sub, fname_new)):
+                        continue
+                    src_key = f"jobs/{job_id}/{sub}/{fname_old}"
+                    dst_key = f"jobs/{job_id}/{sub}/{fname_new}"
+                    ok = await r2_copy(src_key, dst_key)
+                    if ok:
+                        await r2_delete(src_key)
+        except Exception as e:
+            logger.warning("[split-line] R2 시프트 일부 실패 job=%s: %s", job_id, e)
+
+    job.script_json = json.dumps(new_lines, ensure_ascii=False)
+    job.line_sources_json = json.dumps(new_sources, ensure_ascii=False)
+    db.commit()
+
+    return SplitLineResponse(
+        lines=[ScriptLine(**l) for l in new_lines],
+        sources=new_sources,
+    )
+
+
+@router.post("/{job_id}/edit-line")
+async def edit_line(
+    body: EditLineRequest,
+    job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_approved_user),
+):
+    """카드 B 전용: 줄 텍스트 편집을 서버 script_json에 sync. 빈 문자열 허용."""
+    job = get_user_job(db, job_id, _user)
+    if job.generation_mode != "user_assets":
+        raise HTTPException(status_code=400, detail="이 작업은 카드 B 모드가 아닙니다")
+    if job.status != "preview_ready":
+        raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
+
+    lines = json.loads(job.script_json or "[]")
+    if not (0 <= body.line_index < len(lines)):
+        raise HTTPException(status_code=400, detail="잘못된 줄 인덱스")
+    lines[body.line_index]["text"] = body.text
+    job.script_json = json.dumps(lines, ensure_ascii=False)
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/{job_id}/preview", response_model=PreviewResponse)
@@ -337,7 +489,11 @@ async def _regenerate_single_image(job_id: str, line_index: int, korean_request:
     """백그라운드: 단일 이미지 재생성"""
     from jobs_queue.worker import regenerate_image_for_job
 
-    await regenerate_image_for_job(job_id, line_index, korean_request, english_prompt)
+    await _mark_ai_started(job_id, line_index)
+    try:
+        await regenerate_image_for_job(job_id, line_index, korean_request, english_prompt)
+    finally:
+        await _mark_ai_finished(job_id, line_index)
 
 
 # ─────────────────────────────────────

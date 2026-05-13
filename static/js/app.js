@@ -1419,6 +1419,7 @@ function renderUserLines() {
         const source = sources[i] || 'ai';
         const status = statuses[i] || 'pending';
         const failed = status === 'failed';
+        const isEmpty = !text || !text.trim();
         const ts = Date.now();  // 캐시 버스트
         let slot = '';
         if (source === 'clip' && status === 'ready') {
@@ -1431,13 +1432,17 @@ function renderUserLines() {
             slot = `<span class="user-line-slot-empty">실패</span>`;
         }
         const statusBadge = status === 'pending' ? '<div class="user-line-slot-status">대기</div>' : '';
+        const cardClasses = ['user-line-item'];
+        if (failed) cardClasses.push('failed');
+        if (isEmpty) cardClasses.push('empty');
         return `
-            <div class="user-line-item ${failed ? 'failed' : ''}" data-line-index="${i}">
+            <div class="${cardClasses.join(' ')}" data-line-index="${i}">
                 <div class="user-line-num">${i + 1}</div>
                 <div class="user-line-text"
                      contenteditable="true"
                      spellcheck="false"
-                     title="클릭해서 직접 수정 (Enter 저장, Esc 취소)"
+                     title="클릭해서 직접 수정 (Enter로 분할, Esc 취소)"
+                     data-placeholder="비어 있는 줄 — 내용을 입력하거나 위/아래 카드와 묶어 사용하세요"
                      onblur="saveUserLineEdit(${i}, this)"
                      onkeydown="handleUserLineKey(event, ${i}, this)">${escapeHtml(text)}</div>
                 <div class="user-line-slot">${slot}${statusBadge}</div>
@@ -1458,27 +1463,96 @@ function renderUserLines() {
     if (summary) summary.textContent = `${ready}/${total}줄 준비됨`;
 }
 
-// 줄 텍스트를 클릭 인라인 편집: blur 시 저장, Enter/Esc 키 처리
-function saveUserLineEdit(i, el) {
+// 분할 중복 가드 + 폴링 generation token (split 발생 시 +1)
+window._splitInFlight = false;
+window._splitGen = 0;
+
+// contenteditable 안에서 selection의 element 기준 텍스트 오프셋. 텍스트 노드 여러 개·<br>이 끼어 있어도 정확.
+function getCaretCharOffset(el) {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return (el.innerText || '').length;
+    const range = sel.getRangeAt(0);
+    if (!el.contains(range.startContainer)) return (el.innerText || '').length;
+    const pre = range.cloneRange();
+    pre.selectNodeContents(el);
+    pre.setEnd(range.startContainer, range.startOffset);
+    return pre.toString().length;
+}
+
+// 줄 텍스트를 클릭 인라인 편집: blur 시 서버 sync, 빈 줄 허용
+async function saveUserLineEdit(i, el) {
     if (!window._splitLines || i < 0 || i >= window._splitLines.length) return;
-    const next = (el.innerText || '').trim();
-    if (!next) {
-        // 빈 줄 방지 → 원본 복구
-        el.innerText = window._splitLines[i];
-        return;
-    }
+    if (window._splitInFlight) return;  // 분할 진행 중에는 blur 저장 무시
+    const next = (el.innerText || '').replace(/\s+$/, '');
     if (next === window._splitLines[i]) return;
     window._splitLines[i] = next;
+
+    if (window._draftJobId) {
+        try {
+            await authFetch(`/api/jobs/${window._draftJobId}/edit-line`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ line_index: i, text: next }),
+            });
+        } catch (e) {
+            console.warn('edit-line sync 실패', e);
+        }
+    }
+
+    const card = el.closest('.user-line-item');
+    if (card) card.classList.toggle('empty', !next.trim());
 }
 
 function handleUserLineKey(ev, i, el) {
-    if (ev.key === 'Enter' && !ev.shiftKey) {
+    if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
         ev.preventDefault();
-        el.blur();
+        splitUserLineAt(i, el);
     } else if (ev.key === 'Escape') {
         ev.preventDefault();
-        el.innerText = window._splitLines[i];
+        el.innerText = (window._splitLines[i] || '');
         el.blur();
+    }
+}
+
+async function splitUserLineAt(i, el) {
+    if (window._splitInFlight) return;
+    if (!window._draftJobId) return;
+
+    // blur로 인한 stale save를 막기 위해 onblur 무력화
+    el.onblur = null;
+
+    const offset = getCaretCharOffset(el);
+    const full = el.innerText || '';
+    const before = full.slice(0, offset);
+    const after = full.slice(offset);
+
+    window._splitInFlight = true;
+    try {
+        const resp = await authFetch(`/api/jobs/${window._draftJobId}/split-line`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_index: i, before, after }),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ detail: '분할 실패' }));
+            showFriendlyError(err.detail || '분할 실패');
+            return;
+        }
+        const data = await resp.json();
+        // 서버 진실로 클라이언트 상태 전면 교체
+        window._splitLines = data.lines.map(l => l.text);
+        window._userLineSources = data.sources;
+        window._userLineStatuses = data.lines.map(l => l.status);
+        window._splitGen += 1;  // 진행 중 폴링 무효화
+        renderUserLines();
+        // 새 카드(i+1)에 포커스 + 스크롤
+        const newCard = document.querySelector(`[data-line-index="${i + 1}"] .user-line-text`);
+        if (newCard) {
+            newCard.focus();
+            newCard.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
+    } finally {
+        window._splitInFlight = false;
     }
 }
 
@@ -1602,11 +1676,14 @@ async function pollUserLineStatus(i) {
     // 이미지 파일 존재로 줄별 상태를 단순 폴링한다.
     if (!window._draftJobId) return;
     const jobId = window._draftJobId;
+    const startGen = window._splitGen || 0;  // 폴링 시작 시점의 분할 세대
     const maxTries = 60;  // ~120초
     for (let n = 0; n < maxTries; n++) {
         await new Promise(r => setTimeout(r, 2000));
         // 진행 중 다른 모드로 빠졌으면 중단
         if (window._draftJobId !== jobId) return;
+        // 분할이 일어났다면 즉시 종료 (인덱스가 시프트되어 자신의 i가 더는 같은 카드가 아닐 수 있음)
+        if ((window._splitGen || 0) !== startGen) return;
         try {
             const r = await authFetch(`/api/jobs/${jobId}`);
             if (!r.ok) continue;
@@ -1614,6 +1691,7 @@ async function pollUserLineStatus(i) {
             // 상태 자체보다는 이미지 URL HEAD로 확인
             const head = await fetch(`/api/jobs/${jobId}/images/${i}?t=${Date.now()}`, { method: 'HEAD' });
             if (head.ok) {
+                if ((window._splitGen || 0) !== startGen) return;  // race 마지막 가드
                 window._userLineStatuses[i] = 'ready';
                 window._userLineSources[i] = 'ai';
                 renderUserLines();
@@ -1622,13 +1700,26 @@ async function pollUserLineStatus(i) {
         } catch (e) { /* 폴링 실패는 무시 */ }
     }
     // 타임아웃: 한 줄 실패로 처리
-    window._userLineStatuses[i] = 'failed';
-    renderUserLines();
+    if ((window._splitGen || 0) === startGen) {
+        window._userLineStatuses[i] = 'failed';
+        renderUserLines();
+    }
 }
 
 async function proceedToTtsFromUserLines() {
-    // 모든 줄이 준비됐는지 검증
     const lines = window._splitLines || [];
+    // 1) 빈 카드 검증 우선 — 있으면 첫 빈 카드로 스크롤·포커스 후 진행 차단
+    const emptyIdx = lines.findIndex(s => !s || !s.trim());
+    if (emptyIdx >= 0) {
+        alert('비어 있는 줄이 있습니다. 내용을 채우고 다시 시도하세요.');
+        const card = document.querySelector(`[data-line-index="${emptyIdx}"]`);
+        if (card) {
+            card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            card.querySelector('.user-line-text')?.focus();
+        }
+        return;
+    }
+    // 2) 자산 매칭 확인
     const statuses = window._userLineStatuses || [];
     const missing = lines.map((_, i) => statuses[i] !== 'ready' ? i : -1).filter(i => i >= 0);
     if (missing.length > 0) {
