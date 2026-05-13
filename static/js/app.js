@@ -47,7 +47,7 @@ const STEPS_AI_FULL = [
     { id: 'step-bgm',       label: 'BGM',      summaryFn: () => selectedBgm ? selectedBgm.replace(/\.(mp3|wav|ogg)$/i, '') : '없음' },
 ];
 const STEPS_USER_ASSETS = [
-    { id: 'step-user-script', label: '대본',     summaryFn: () => ((window._userScript || '').slice(0, 12)) },
+    { id: 'step-user-script', label: '제목·대본', summaryFn: () => ((window._userScript || '').slice(0, 12)) },
     { id: 'step-user-lines',  label: '자산',     summaryFn: () => ((window._splitLines || []).length ? `${window._splitLines.length}줄` : '') },
     { id: 'step-tts',         label: '음성',     summaryFn: () => {
         const sel = document.getElementById('tts-voice');
@@ -263,6 +263,30 @@ function updateTitlePreview() {
     el1.textContent = titleLine1;
     el2.textContent = titleLine2;
 
+    requestAnimationFrame(() => {
+        const frameW = frame.offsetWidth;
+        const overflow = el1.scrollWidth > frameW || el2.scrollWidth > frameW;
+        frame.classList.toggle('overflow', overflow);
+    });
+}
+
+// 카드 B(내가 직접 제공) 전용 — AI 흐름과 같은 전역(titleLine1/2/selectedTitle)을 공용하지만
+// DOM ID는 'user-' 접두사로 분리해 중복 ID 충돌을 피한다.
+function onUserTitleLineEdited() {
+    titleLine1 = document.getElementById('user-title-line1').value;
+    titleLine2 = document.getElementById('user-title-line2').value;
+    selectedTitle = titleLine2 ? titleLine1 + ' ' + titleLine2 : titleLine1;
+    updateUserTitlePreview();
+    updateSplitScriptButtonState();
+}
+
+function updateUserTitlePreview() {
+    const el1 = document.getElementById('user-preview-line1');
+    const el2 = document.getElementById('user-preview-line2');
+    const frame = document.getElementById('user-title-preview-frame');
+    if (!el1 || !el2 || !frame) return;
+    el1.textContent = titleLine1;
+    el2.textContent = titleLine2;
     requestAnimationFrame(() => {
         const frameW = frame.offsetWidth;
         const overflow = el1.scrollWidth > frameW || el2.scrollWidth > frameW;
@@ -745,6 +769,11 @@ function validateBeforeCreate() {
             goToStep(stepIndexOf('step-user-script'));
             return false;
         }
+        if (!titleLine1.trim() || !titleLine2.trim()) {
+            alert('영상에 표시될 제목 2줄을 모두 입력해주세요.');
+            goToStep(stepIndexOf('step-user-script'));
+            return false;
+        }
         const lines = window._splitLines || [];
         const statuses = window._userLineStatuses || [];
         const missingIdx = lines.findIndex((_, i) => statuses[i] !== 'ready');
@@ -825,6 +854,10 @@ async function confirmDraftJob() {
             bgm_filename: selectedBgm || null,
             bgm_start_sec: parseFloat(document.getElementById('bgm-start-sec').value) || 0,
             bgm_volume: parseInt(document.getElementById('bgm-volume').value) / 100,
+            // 제목 3종 모두 전송. title이 비면 렌더러(video_assembler.py)가 제목을 통째로 건너뜀.
+            title: titleLine2 ? titleLine1 + ' ' + titleLine2 : titleLine1,
+            title_line1: titleLine1,
+            title_line2: titleLine2,
         };
 
         showLoading('작업 시작 중...');
@@ -1329,6 +1362,21 @@ function backToModeSelect() {
         window._draftJobId = null;
         window._splitLines = [];
     }
+    // 제목 상태 초기화 (다른 모드로 가도 잔재가 새지 않도록)
+    titleLine1 = '';
+    titleLine2 = '';
+    selectedTitle = null;
+    const t1 = document.getElementById('user-title-line1');
+    const t2 = document.getElementById('user-title-line2');
+    if (t1) t1.value = '';
+    if (t2) t2.value = '';
+    const f = document.getElementById('user-title-preview-frame');
+    if (f) f.classList.remove('overflow');
+    const p1 = document.getElementById('user-preview-line1');
+    const p2 = document.getElementById('user-preview-line2');
+    if (p1) p1.textContent = '';
+    if (p2) p2.textContent = '';
+    updateSplitScriptButtonState();  // input 비웠으니 disabled 상태도 갱신
     document.querySelectorAll('.step-section').forEach(el => el.classList.add('hidden'));
     const modeSel = document.getElementById('step-mode-select');
     if (modeSel) modeSel.classList.remove('hidden');
@@ -1350,8 +1398,20 @@ function updateUserScriptCount() {
     const ta = document.getElementById('user-script');
     const count = ta.value.length;
     document.getElementById('user-script-count').textContent = count;
+    updateSplitScriptButtonState();
+}
+
+// "대본 쪼개기" 버튼은 대본 10자 이상 + 제목 2줄 모두 입력됐을 때만 활성.
+// trim 검사를 통과해야 하므로 공백만 입력하는 우회 경로도 막힌다.
+function updateSplitScriptButtonState() {
+    const ta = document.getElementById('user-script');
+    const scriptLen = (ta && ta.value || '').length;
+    const t1El = document.getElementById('user-title-line1');
+    const t2El = document.getElementById('user-title-line2');
+    const t1 = (t1El && t1El.value || '').trim();
+    const t2 = (t2El && t2El.value || '').trim();
     const btn = document.getElementById('btn-split-script');
-    if (btn) btn.disabled = count < 10;
+    if (btn) btn.disabled = !(scriptLen >= 10 && t1 && t2);
 }
 
 async function splitUserScript() {
@@ -1359,6 +1419,10 @@ async function splitUserScript() {
     const script = ta.value.trim();
     if (script.length < 10) {
         alert('대본은 10자 이상 입력해주세요.');
+        return;
+    }
+    if (!titleLine1.trim() || !titleLine2.trim()) {
+        alert('영상에 표시될 제목 2줄을 모두 입력해주세요.');
         return;
     }
 
@@ -1728,9 +1792,9 @@ async function proceedToTtsFromUserLines() {
     }
     // 카드 A의 validateBeforeCreate 통과를 위해 narration 흐름 채움
     window._approvedNarrationLines = lines.slice();
-    selectedTitle = '';
-    titleLine1 = '';
-    titleLine2 = '';
+    // 제목은 step-user-script에서 사용자가 입력한 값을 그대로 보존한다.
+    // 예전엔 여기서 titleLine1/2/selectedTitle을 비웠는데, 그러면 사용자가 입력한
+    // 제목이 confirm 시점에 빈 값으로 전송돼 영상에 제목이 안 박힌다.
     advanceToStep(2);  // STEPS_USER_ASSETS의 2번 = step-tts
 }
 
