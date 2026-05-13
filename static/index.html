@@ -249,19 +249,55 @@
             </div>
         </section>
 
-        <!-- 카드 B: 대본 입력 -->
-        <section id="step-user-script" class="card hidden step-section" data-step-id="step-user-script">
-            <div class="step-body">
-                <h2>대본 입력</h2>
-                <p class="subtitle">미리 준비한 대본을 그대로 붙여 넣어주세요. 문장 끝(마침표·물음표·느낌표) 또는 줄바꿈을 기준으로 자동으로 분리됩니다.</p>
-                <div class="form-group">
-                    <label for="user-script">대본</label>
-                    <textarea id="user-script" rows="10" maxlength="5000" placeholder="여기에 대본을 입력하거나 붙여넣기 하세요 (최대 5000자)." oninput="updateUserScriptCount()"></textarea>
-                    <p class="field-help"><span id="user-script-count">0</span>자 / 최대 5000자</p>
+        <!-- 카드 B: 제목·대본 (두 개의 카드를 한 step-section에 묶음) -->
+        <section id="step-user-script" class="hidden step-section" data-step-id="step-user-script">
+            <!-- 카드 1: 제목 입력 -->
+            <div class="card">
+                <div class="step-body">
+                    <h2>1. 제목 입력</h2>
+                    <p class="subtitle">영상 상단에 흰색·노란색 2줄로 표시됩니다.</p>
+                    <div class="title-edit-box">
+                        <label>영상에 표시될 제목 (2줄)</label>
+                        <div class="title-split-layout">
+                            <div class="title-preview-frame" id="user-title-preview-frame">
+                                <div class="title-preview-line1" id="user-preview-line1"></div>
+                                <div class="title-preview-line2" id="user-preview-line2"></div>
+                                <div class="title-preview-image-area"></div>
+                                <div class="title-overflow-warn">제목이 화면을 넘어갑니다</div>
+                            </div>
+                            <div class="title-split-inputs">
+                                <div class="form-group">
+                                    <label>윗줄</label>
+                                    <input type="text" id="user-title-line1" maxlength="16"
+                                           placeholder="예: 얼굴 빨개지는"
+                                           oninput="onUserTitleLineEdited()">
+                                </div>
+                                <div class="form-group">
+                                    <label>아랫줄</label>
+                                    <input type="text" id="user-title-line2" maxlength="16"
+                                           placeholder="예: 의외의 진짜 이유"
+                                           oninput="onUserTitleLineEdited()">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <div class="btn-group">
-                    <button class="btn-secondary" onclick="backToModeSelect()">이전</button>
-                    <button class="btn-primary" id="btn-split-script" onclick="splitUserScript()" disabled>대본 쪼개기</button>
+            </div>
+
+            <!-- 카드 2: 대본 입력 -->
+            <div class="card">
+                <div class="step-body">
+                    <h2>2. 대본 입력</h2>
+                    <p class="subtitle">미리 준비한 대본을 그대로 붙여 넣어주세요. 문장 끝(마침표·물음표·느낌표) 또는 줄바꿈을 기준으로 자동으로 분리됩니다.</p>
+                    <div class="form-group">
+                        <label for="user-script">대본</label>
+                        <textarea id="user-script" rows="10" maxlength="5000" placeholder="여기에 대본을 입력하거나 붙여넣기 하세요 (최대 5000자)." oninput="updateUserScriptCount()"></textarea>
+                        <p class="field-help"><span id="user-script-count">0</span>자 / 최대 5000자</p>
+                    </div>
+                    <div class="btn-group">
+                        <button class="btn-secondary" onclick="backToModeSelect()">이전</button>
+                        <button class="btn-primary" id="btn-split-script" onclick="splitUserScript()" disabled>대본 쪼개기</button>
+                    </div>
                 </div>
             </div>
         </section>
