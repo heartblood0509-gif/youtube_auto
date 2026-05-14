@@ -50,13 +50,17 @@ body:not(.has-navbar) {
     padding: 20px;
 }
 
+.workflow-shell {
+    padding-top: 20px;
+}
+
 .container {
     max-width: 800px;
     margin: 0 auto;
 }
 
-body.user-lines-wide .container {
-    max-width: min(1480px, calc(100vw - 48px));
+body.user-lines-wide .step-container {
+    max-width: min(1320px, calc(100vw - 48px));
 }
 
 header {
@@ -1662,14 +1666,26 @@ input[type="range"] {
 
 /* ── 카드 B 줄별 자산 편집 ── */
 .user-lines-editor-section {
-    padding: 28px;
+    padding: 0;
     overflow: visible;
+    margin-bottom: 20px;
 }
 .user-lines-layout {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 360px;
     gap: 28px;
     align-items: start;
+}
+.user-lines-panel-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 28px;
+}
+.user-lines-panel-card h2 {
+    font-size: 18px;
+    margin-bottom: 20px;
+    color: var(--primary);
 }
 .user-lines-editor-pane {
     display: flex;
@@ -1678,12 +1694,6 @@ input[type="range"] {
 }
 .user-lines-preview-pane {
     min-width: 0;
-}
-.user-lines-preview-card {
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: color-mix(in srgb, var(--surface) 88%, var(--bg));
-    padding: 16px;
 }
 .user-lines-preview-header {
     display: flex;
@@ -1934,10 +1944,13 @@ input[type="range"] {
     }
 }
 @media (max-width: 1100px) {
-    body.user-lines-wide .container {
+    body.user-lines-wide .step-container {
         max-width: min(900px, calc(100vw - 24px));
     }
     .user-lines-editor-section {
+        padding: 0;
+    }
+    .user-lines-panel-card {
         padding: 20px;
     }
     .user-lines-layout {

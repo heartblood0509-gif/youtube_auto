@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Shorts Pick</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=10">
+    <link rel="stylesheet" href="/static/css/style.css?v=12">
 </head>
 <body class="has-navbar">
     <script>if(localStorage.getItem('theme')==='dark'||!localStorage.getItem('theme'))document.body.classList.add('dark');</script>
@@ -16,12 +16,14 @@
         <div id="navbar-right" class="navbar-right"></div>
     </nav>
 
-    <div class="container" style="padding-top: 20px;">
+    <div class="workflow-shell">
 
         <!-- 타임라인 (JS가 활성 모드 STEPS로 동적 렌더; 모드 선택 전엔 숨김) -->
-        <nav id="workflow-timeline" class="timeline hidden">
+        <nav id="workflow-timeline" class="timeline container workflow-container hidden">
             <ol class="timeline-track" id="timeline-track"></ol>
         </nav>
+
+        <div class="container step-container">
 
         <!-- Step 0: 모드 선택 (진입 화면) -->
         <section id="step-mode-select" class="card step-section" data-step-id="step-mode-select">
@@ -303,10 +305,10 @@
         </section>
 
         <!-- 카드 B: 줄별 자산 편집 -->
-        <section id="step-user-lines" class="card hidden step-section user-lines-editor-section" data-step-id="step-user-lines">
+        <section id="step-user-lines" class="hidden step-section user-lines-editor-section" data-step-id="step-user-lines">
             <div class="step-body">
                 <div class="user-lines-layout">
-                    <div class="user-lines-editor-pane">
+                    <div class="user-lines-editor-pane user-lines-panel-card user-lines-editor-card">
                         <h2>줄별 자산 편집</h2>
                         <p class="subtitle">각 줄에 사용할 이미지나 영상을 올려주세요. 비어 있는 줄은 AI가 이미지를 만들어줍니다. 카드 안에서 Enter를 치면 그 위치에서 둘로 쪼개집니다.</p>
                         <div class="batch-actions">
@@ -320,7 +322,7 @@
                         </div>
                     </div>
                     <aside class="user-lines-preview-pane" aria-label="선택 줄 자산 프리뷰">
-                        <div class="user-lines-preview-card">
+                        <div class="user-lines-preview-card user-lines-panel-card">
                             <div class="user-lines-preview-header">
                                 <div>
                                     <p class="user-lines-preview-kicker">선택 줄 프리뷰</p>
@@ -344,6 +346,7 @@
             </div>
         </section>
 
+        </div>
     </div>
 
     <script src="/static/js/auth.js"></script>
