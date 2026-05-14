@@ -65,6 +65,7 @@ window._userScript = '';         // 카드 B: 원본 자유 대본
 window._userLineDirty = new Set();              // sync 필요한 줄 인덱스
 window._userLineSyncInFlight = new Map();       // 줄별 in-flight POST Promise (직렬화용)
 window._pendingUserLinesRender = false;         // 입력 중 미뤄둔 비-force 렌더
+window._activeUserLineIndex = 0;                 // 카드 B: 우측 프리뷰가 보여줄 줄 인덱스
 
 // ── 상태 관리 ──
 let titleOptions = null;
@@ -296,6 +297,7 @@ function updateUserTitlePreview() {
         const overflow = el1.scrollWidth > frameW || el2.scrollWidth > frameW;
         frame.classList.toggle('overflow', overflow);
     });
+    renderUserLinePreview();
 }
 
 function getCategoryPayload() {
@@ -1017,6 +1019,8 @@ function goToStep(stepIndex) {
     }
     currentStepIndex = stepIndex;
     const stepId = STEPS[stepIndex].id;
+    const isUserLinesStep = stepId === 'step-user-lines';
+    document.body.classList.toggle('user-lines-wide', isUserLinesStep);
 
     // 모드 선택 화면은 STEPS 외부의 진입 화면이라 항상 숨김
     const modeSel = document.getElementById('step-mode-select');
@@ -1366,6 +1370,7 @@ function backToModeSelect() {
         // draft job은 서버에 남지만 사용자가 다른 모드로 갈 수도 있으므로 클라 상태만 정리
         window._draftJobId = null;
         window._splitLines = [];
+        window._activeUserLineIndex = 0;
     }
     // 제목 상태 초기화 (다른 모드로 가도 잔재가 새지 않도록)
     titleLine1 = '';
@@ -1390,6 +1395,7 @@ function backToModeSelect() {
     const tl = document.getElementById('workflow-timeline');
     if (tl) tl.classList.add('hidden');
     window._generationMode = null;
+    document.body.classList.remove('user-lines-wide');
 }
 
 function backToUserScript() {
@@ -1463,6 +1469,7 @@ async function splitUserScript() {
         window._userLineStatuses = data.lines.map(() => 'pending');
         // 줄별 자산 출처 (클라 캐시) — 'ai'|'image'|'clip'
         window._userLineSources = data.lines.map(() => 'ai');
+        window._activeUserLineIndex = 0;
 
         hideLoading();
         // step-user-script 다음이 step-user-lines (인덱스 1)
@@ -1476,6 +1483,81 @@ async function splitUserScript() {
 // ──────────────────────────────────
 // 카드 B: 줄별 자산 편집
 // ──────────────────────────────────
+function normalizeUserLinePreviewIndex(index) {
+    const lines = window._splitLines || [];
+    if (lines.length === 0) return 0;
+    const n = Number.isInteger(index) ? index : 0;
+    return Math.max(0, Math.min(n, lines.length - 1));
+}
+
+function getUserLineSourceLabel(source, status) {
+    if (status === 'failed') return '실패';
+    if (status === 'pending') return '대기';
+    if (source === 'clip') return '영상';
+    if (source === 'image') return '업로드 이미지';
+    return 'AI 이미지';
+}
+
+function setActiveUserLineIndex(index, opts) {
+    window._activeUserLineIndex = normalizeUserLinePreviewIndex(index);
+    document.querySelectorAll('.user-line-item').forEach(card => {
+        const cardIndex = Number(card.dataset.lineIndex);
+        card.classList.toggle('active', cardIndex === window._activeUserLineIndex);
+    });
+    if (!(opts && opts.skipPreview)) renderUserLinePreview();
+}
+
+function renderUserLinePreview() {
+    const media = document.getElementById('user-line-preview-media');
+    const title = document.getElementById('user-line-preview-title');
+    const sourcePill = document.getElementById('user-line-preview-source');
+    const caption = document.getElementById('user-line-preview-caption');
+    const titleLine1El = document.getElementById('user-line-preview-title-line1');
+    const titleLine2El = document.getElementById('user-line-preview-title-line2');
+    if (!media || !title || !sourcePill || !caption || !titleLine1El || !titleLine2El) return;
+
+    const lines = window._splitLines || [];
+    const sources = window._userLineSources || [];
+    const statuses = window._userLineStatuses || [];
+    const jobId = window._draftJobId;
+
+    titleLine1El.textContent = titleLine1 || '';
+    titleLine2El.textContent = titleLine2 || '';
+
+    if (lines.length === 0 || !jobId) {
+        media.innerHTML = '<span class="shorts-preview-empty">생성/업로드 대기</span>';
+        title.textContent = '선택 줄 없음';
+        sourcePill.textContent = '대기';
+        delete sourcePill.dataset.status;
+        caption.textContent = '자산이 준비되면 이곳에 9:16으로 표시됩니다.';
+        return;
+    }
+
+    const i = normalizeUserLinePreviewIndex(window._activeUserLineIndex);
+    window._activeUserLineIndex = i;
+    const source = sources[i] || 'ai';
+    const status = statuses[i] || 'pending';
+    const label = getUserLineSourceLabel(source, status);
+    const ts = Date.now();
+
+    title.textContent = `${i + 1}번 줄`;
+    sourcePill.textContent = label;
+    sourcePill.dataset.status = status;
+    caption.textContent = status === 'ready'
+        ? `${i + 1}번 줄의 ${label}가 프리뷰에 표시되고 있습니다.`
+        : `${i + 1}번 줄은 아직 자산이 준비되지 않았습니다.`;
+
+    if (source === 'clip' && status === 'ready') {
+        media.innerHTML = `<video src="/api/jobs/${jobId}/clips/${i}?t=${ts}" autoplay muted loop playsinline></video>`;
+    } else if ((source === 'image' || source === 'ai') && status === 'ready') {
+        media.innerHTML = `<img src="/api/jobs/${jobId}/images/${i}?t=${ts}" alt="">`;
+    } else if (status === 'failed') {
+        media.innerHTML = '<span class="shorts-preview-empty">자산 생성 실패</span>';
+    } else {
+        media.innerHTML = '<span class="shorts-preview-empty">생성/업로드 대기</span>';
+    }
+}
+
 function renderUserLines(opts) {
     const force = !!(opts && opts.force);
     // 사용자가 카드 입력란 안에서 타이핑 중이면 native undo 히스토리 보호를 위해 렌더를 미룸.
@@ -1518,7 +1600,7 @@ function renderUserLines(opts) {
         // × 버튼은 항상 렌더. 가시성은 CSS(.is-empty 부모일 때만 표시)로 제어.
         const deleteBtn = `<button class="user-line-delete" onclick="deleteUserLine(${i})" title="빈 카드 삭제" aria-label="빈 카드 삭제">×</button>`;
         return `
-            <div class="${cardClasses.join(' ')}" data-line-index="${i}">
+            <div class="${cardClasses.join(' ')}" data-line-index="${i}" onclick="setActiveUserLineIndex(${i})">
                 ${deleteBtn}
                 <div class="user-line-num">${i + 1}</div>
                 <div class="user-line-text"
@@ -1526,6 +1608,7 @@ function renderUserLines(opts) {
                      spellcheck="false"
                      title="클릭해서 직접 수정 (Enter로 분할, 첫 글자 앞 Backspace로 윗 카드와 병합, Ctrl+Z로 되돌리기)"
                      data-placeholder="비어 있는 줄 — 내용을 입력하거나 위/아래 카드와 묶어 사용하세요"
+                     onfocus="setActiveUserLineIndex(${i})"
                      oninput="handleUserLineInput(${i}, this)"
                      onblur="saveUserLineEdit(${i}, this)"
                      onkeydown="handleUserLineKey(event, ${i}, this)">${escapeHtml(text)}</div>
@@ -1545,6 +1628,7 @@ function renderUserLines(opts) {
     const ready = statuses.filter(s => s === 'ready').length;
     const summary = document.getElementById('user-lines-status');
     if (summary) summary.textContent = `${ready}/${total}줄 준비됨`;
+    setActiveUserLineIndex(window._activeUserLineIndex);
 }
 
 // 분할 중복 가드 + 폴링 generation token (split 발생 시 +1)
@@ -1725,6 +1809,7 @@ async function mergeLineWithPrevious(i, el) {
         window._userLineStatuses = data.lines.map(l => l.status);
         window._userLineDirty.clear();           // 서버 응답이 진실 — dirty 다 비움
         window._splitGen += 1;
+        window._activeUserLineIndex = normalizeUserLinePreviewIndex(i - 1);
         renderUserLines({ force: true });
         // 합쳐진 카드(i-1)에 포커스 + 캐럿을 junction 위치(prevLen)에
         const card = document.querySelector(`[data-line-index="${i - 1}"] .user-line-text`);
@@ -1762,9 +1847,10 @@ async function deleteUserLine(i) {
         window._userLineStatuses = data.lines.map(l => l.status);
         window._userLineDirty.clear();
         window._splitGen += 1;
-        renderUserLines({ force: true });
         // 윗 카드(i-1)로 포커스, 없으면(첫 카드 삭제) 새 첫 카드(0)로
         const targetIdx = i > 0 ? i - 1 : 0;
+        window._activeUserLineIndex = normalizeUserLinePreviewIndex(targetIdx);
+        renderUserLines({ force: true });
         const card = document.querySelector(`[data-line-index="${targetIdx}"] .user-line-text`);
         if (card) {
             card.focus();
@@ -1810,6 +1896,7 @@ async function splitUserLineAt(i, el) {
         window._userLineStatuses = data.lines.map(l => l.status);
         window._userLineDirty.clear();
         window._splitGen += 1;  // 진행 중 폴링 무효화
+        window._activeUserLineIndex = normalizeUserLinePreviewIndex(i + 1);
         renderUserLines({ force: true });
         // 새 카드(i+1)에 포커스 + 스크롤
         const newCard = document.querySelector(`[data-line-index="${i + 1}"] .user-line-text`);
@@ -1824,6 +1911,7 @@ async function splitUserLineAt(i, el) {
 
 async function userLineGenerateAI(i) {
     if (!window._draftJobId) return;
+    setActiveUserLineIndex(i);
     // 서버가 script_json의 최신 텍스트로 프롬프트를 생성하도록 입력 sync 먼저
     await flushActiveUserLineEdit();
     window._userLineStatuses[i] = 'pending';
@@ -1850,6 +1938,7 @@ async function userLineGenerateAI(i) {
 
 function userLineUploadImage(i) {
     if (!window._draftJobId) return;
+    setActiveUserLineIndex(i);
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/png,image/jpeg,image/webp';
@@ -1883,6 +1972,7 @@ function userLineUploadImage(i) {
 
 function userLineUploadClip(i) {
     if (!window._draftJobId) return;
+    setActiveUserLineIndex(i);
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'video/mp4,video/quicktime,video/webm,video/x-msvideo';
