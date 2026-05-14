@@ -214,6 +214,7 @@ async def create_draft_job(
             "text": text,
             "image_prompt": "",
             "motion": "zoom_in",
+            "asset_version": 0,
             "status": "pending",
             "fail_reason": None,
         }
