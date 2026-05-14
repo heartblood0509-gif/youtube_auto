@@ -9,15 +9,31 @@ env/
 .mypy_cache/
 .ruff_cache/
 
-# 환경변수 / 시크릿
+# Environment / local secrets
 .env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
 
-# 런타임 산출물
+# Local data / generated outputs
 storage/
 bgm/
+*.db
+*.sqlite
+*.sqlite3
 *.log
 
-# 에디터 / IDE
+# Local secret material
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+*-credentials.json
+service-account*.json
+
+# Editor / IDE
 .claude/
 .vscode/
 .idea/
@@ -30,7 +46,7 @@ bgm/
 Thumbs.db
 desktop.ini
 
-# 외부 도구 잔여물
+# Local tools
 .playwright-mcp/
 gh.zip
 gh_cli/
