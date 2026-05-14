@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Shorts Pick</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=12">
+    <link rel="stylesheet" href="/static/css/style.css?v=13">
 </head>
 <body class="has-navbar">
     <script>if(localStorage.getItem('theme')==='dark'||!localStorage.getItem('theme'))document.body.classList.add('dark');</script>
@@ -312,7 +312,7 @@
                         <h2>줄별 자산 편집</h2>
                         <p class="subtitle">각 줄에 사용할 이미지나 영상을 올려주세요. 비어 있는 줄은 AI가 이미지를 만들어줍니다. 카드 안에서 Enter를 치면 그 위치에서 둘로 쪼개집니다.</p>
                         <div class="batch-actions">
-                            <button class="btn-secondary" onclick="batchGenerateMissingImages()">🪄 비어 있는 줄 일괄 AI 생성</button>
+                            <button class="btn-secondary" id="btn-batch-generate-images" onclick="batchGenerateMissingImages()">🪄 비어 있는 줄 일괄 AI 생성</button>
                             <span class="text-dim" id="user-lines-status"></span>
                         </div>
                         <div id="user-lines-list" class="user-lines-list"></div>
@@ -350,6 +350,6 @@
     </div>
 
     <script src="/static/js/auth.js"></script>
-    <script src="/static/js/app.js?v=20"></script>
+    <script src="/static/js/app.js?v=23"></script>
 </body>
 </html>

@@ -9,6 +9,7 @@ from db.database import get_db
 from db.models import Job, User, UserProduct
 from config import settings
 from core.time_utils import utc_isoformat, utc_now_naive
+from core.user_assets_visual import new_line_id
 import asyncio
 import glob
 import json
@@ -193,6 +194,7 @@ async def create_draft_job(
     n = len(request.lines)
     script_lines = [
         {
+            "line_id": new_line_id(),
             "text": text,
             "image_prompt": "",
             "motion": "zoom_in",
