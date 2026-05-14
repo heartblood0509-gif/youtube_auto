@@ -59,8 +59,12 @@ let STEPS = STEPS_AI_FULL;
 let currentStepIndex = 0;
 window._generationMode = null;  // 'ai_full' | 'user_assets' — 모드 선택 전엔 null
 window._draftJobId = null;       // 카드 B: draft Job ID
-window._splitLines = [];         // 카드 B: 쪼개진 대본 (텍스트만)
+window._splitLines = [];         // 카드 B: 쪼개진 대본 (서버 sync 기준 — 마지막으로 서버에 반영 확인된 값)
 window._userScript = '';         // 카드 B: 원본 자유 대본
+// Part 3: 화면 draft / 서버 sync 기준 / dirty 분리
+window._userLineDirty = new Set();              // sync 필요한 줄 인덱스
+window._userLineSyncInFlight = new Map();       // 줄별 in-flight POST Promise (직렬화용)
+window._pendingUserLinesRender = false;         // 입력 중 미뤄둔 비-force 렌더
 
 // ── 상태 관리 ──
 let titleOptions = null;
@@ -1046,7 +1050,8 @@ function goToStep(stepIndex) {
         loadBgmList();
     }
     if (stepId === 'step-user-lines') {
-        renderUserLines();
+        // step 진입 초기 렌더 — focus 없으므로 force는 무해하지만 의도 명시
+        renderUserLines({ force: true });
     }
 
     updateTimeline();
@@ -1471,7 +1476,18 @@ async function splitUserScript() {
 // ──────────────────────────────────
 // 카드 B: 줄별 자산 편집
 // ──────────────────────────────────
-function renderUserLines() {
+function renderUserLines(opts) {
+    const force = !!(opts && opts.force);
+    // 사용자가 카드 입력란 안에서 타이핑 중이면 native undo 히스토리 보호를 위해 렌더를 미룸.
+    // saveUserLineEdit finally가 다음 blur에 flush.
+    const active = document.activeElement;
+    const isTyping = !!(active && active.classList && active.classList.contains('user-line-text'));
+    if (isTyping && !force) {
+        window._pendingUserLinesRender = true;
+        return;
+    }
+    window._pendingUserLinesRender = false;
+
     const container = document.getElementById('user-lines-list');
     if (!container) return;
     const lines = window._splitLines || [];
@@ -1483,6 +1499,7 @@ function renderUserLines() {
         const source = sources[i] || 'ai';
         const status = statuses[i] || 'pending';
         const failed = status === 'failed';
+        const isEmpty = !text || !text.trim();
         const ts = Date.now();  // 캐시 버스트
         let slot = '';
         if (source === 'clip' && status === 'ready') {
@@ -1495,13 +1512,21 @@ function renderUserLines() {
             slot = `<span class="user-line-slot-empty">실패</span>`;
         }
         const statusBadge = status === 'pending' ? '<div class="user-line-slot-status">대기</div>' : '';
+        const cardClasses = ['user-line-item'];
+        if (failed) cardClasses.push('failed');
+        if (isEmpty) cardClasses.push('is-empty');
+        // × 버튼은 항상 렌더. 가시성은 CSS(.is-empty 부모일 때만 표시)로 제어.
+        const deleteBtn = `<button class="user-line-delete" onclick="deleteUserLine(${i})" title="빈 카드 삭제" aria-label="빈 카드 삭제">×</button>`;
         return `
-            <div class="user-line-item ${failed ? 'failed' : ''}" data-line-index="${i}">
+            <div class="${cardClasses.join(' ')}" data-line-index="${i}">
+                ${deleteBtn}
                 <div class="user-line-num">${i + 1}</div>
                 <div class="user-line-text"
                      contenteditable="true"
                      spellcheck="false"
-                     title="클릭해서 직접 수정 (Enter 저장, Esc 취소)"
+                     title="클릭해서 직접 수정 (Enter로 분할, 첫 글자 앞 Backspace로 윗 카드와 병합, Ctrl+Z로 되돌리기)"
+                     data-placeholder="비어 있는 줄 — 내용을 입력하거나 위/아래 카드와 묶어 사용하세요"
+                     oninput="handleUserLineInput(${i}, this)"
                      onblur="saveUserLineEdit(${i}, this)"
                      onkeydown="handleUserLineKey(event, ${i}, this)">${escapeHtml(text)}</div>
                 <div class="user-line-slot">${slot}${statusBadge}</div>
@@ -1522,32 +1547,285 @@ function renderUserLines() {
     if (summary) summary.textContent = `${ready}/${total}줄 준비됨`;
 }
 
-// 줄 텍스트를 클릭 인라인 편집: blur 시 저장, Enter/Esc 키 처리
-function saveUserLineEdit(i, el) {
-    if (!window._splitLines || i < 0 || i >= window._splitLines.length) return;
-    const next = (el.innerText || '').trim();
-    if (!next) {
-        // 빈 줄 방지 → 원본 복구
-        el.innerText = window._splitLines[i];
-        return;
+// 분할 중복 가드 + 폴링 generation token (split 발생 시 +1)
+window._splitInFlight = false;
+window._splitGen = 0;
+
+// contenteditable 안에서 selection의 element 기준 텍스트 오프셋. 텍스트 노드 여러 개·<br>이 끼어 있어도 정확.
+function getCaretCharOffset(el) {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return (el.innerText || '').length;
+    const range = sel.getRangeAt(0);
+    if (!el.contains(range.startContainer)) return (el.innerText || '').length;
+    const pre = range.cloneRange();
+    pre.selectNodeContents(el);
+    pre.setEnd(range.startContainer, range.startOffset);
+    return pre.toString().length;
+}
+
+// oninput: dirty 표시 + .is-empty 시각 토글만 한다.
+// _splitLines(서버 sync 기준)는 절대 건드리지 않아야 saveUserLineEdit의 비교문이 정상 동작한다.
+function handleUserLineInput(i, el) {
+    if (!window._userLineDirty) window._userLineDirty = new Set();
+    window._userLineDirty.add(i);
+    const card = el.closest('.user-line-item');
+    if (card) card.classList.toggle('is-empty', !(el.innerText || '').trim());
+}
+
+// 줄 텍스트를 클릭 인라인 편집: blur 시 서버 sync, 빈 줄 허용
+// 비교 기준은 DOM(draft) vs _splitLines(서버 기준). dirty가 있거나 draft가 다르면 POST.
+// try/finally로 _pendingUserLinesRender flush를 어떤 early-return에서도 보장.
+// opts.force=true: split/merge/delete가 시작 직전 dirty sync를 위해 직접 호출하는 경우 _splitInFlight 우회.
+async function saveUserLineEdit(i, el, opts) {
+    const forceSync = !!(opts && opts.force);
+    try {
+        if (!window._splitLines || i < 0 || i >= window._splitLines.length) return;
+        if (!forceSync && window._splitInFlight) return;  // 분할/병합/삭제 진행 중엔 다음 blur로 미룸
+
+        const dirty = window._userLineDirty && window._userLineDirty.has(i);
+        const next = (el.innerText || '');  // 화면 draft
+        if (!dirty && next === window._splitLines[i]) return;
+        if (next === window._splitLines[i]) {
+            // 화면이 서버 기준과 같으면 dirty만 해제하고 종료
+            window._userLineDirty.delete(i);
+            return;
+        }
+
+        if (!window._draftJobId) return;
+
+        // 같은 줄의 직전 POST와 직렬화
+        const prev = window._userLineSyncInFlight.get(i);
+        if (prev) {
+            try { await prev; } catch (_) {}
+            // 직전 sync가 같은 텍스트를 이미 보냈다면 중복 POST 스킵
+            if (!window._userLineDirty.has(i) && next === window._splitLines[i]) return;
+        }
+
+        const p = (async () => {
+            const resp = await authFetch(`/api/jobs/${window._draftJobId}/edit-line`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ line_index: i, text: next }),
+            });
+            if (!resp.ok) throw new Error('edit-line sync 실패');
+            window._splitLines[i] = next;           // 성공 시 서버 기준 갱신
+            window._userLineDirty.delete(i);
+        })();
+        window._userLineSyncInFlight.set(i, p);
+        try {
+            await p;
+        } catch (e) {
+            console.warn('edit-line sync 실패 — dirty 유지, 다음 flush에서 재시도', e);
+        } finally {
+            if (window._userLineSyncInFlight.get(i) === p) window._userLineSyncInFlight.delete(i);
+        }
+
+        const card = el.closest('.user-line-item');
+        if (card) card.classList.toggle('is-empty', !next.trim());
+    } finally {
+        // 미뤘던 비-force 렌더는 어떤 early-return에도 살아남아 flush
+        if (window._pendingUserLinesRender) {
+            window._pendingUserLinesRender = false;
+            renderUserLines({ force: true });
+        }
     }
-    if (next === window._splitLines[i]) return;
-    window._splitLines[i] = next;
+}
+
+// 서버 텍스트(script_json)를 읽는 다음 액션 직전에 호출.
+// (1) 활성 입력란 blur → saveUserLineEdit 트리거, (2) 남은 dirty 줄 강제 sync, (3) 모든 in-flight POST 대기.
+async function flushActiveUserLineEdit() {
+    const active = document.activeElement;
+    if (active && active.classList && active.classList.contains('user-line-text')) {
+        active.blur();  // onblur가 saveUserLineEdit를 발사
+    }
+    // 최대 5회 반복: flush 도중 사용자가 다른 카드를 다시 dirty로 만들어도 잡아냄
+    for (let n = 0; n < 5; n++) {
+        if (!window._userLineDirty || window._userLineDirty.size === 0) break;
+        const ids = Array.from(window._userLineDirty);
+        for (const i of ids) {
+            const el = document.querySelector(`[data-line-index="${i}"] .user-line-text`);
+            if (el) {
+                // force=true: split/merge/delete 진행 중에도 dirty sync가 일어나도록 _splitInFlight 우회
+                try { await saveUserLineEdit(i, el, { force: true }); } catch (_) {}
+            }
+        }
+    }
+    if (window._userLineSyncInFlight && window._userLineSyncInFlight.size > 0) {
+        const ps = Array.from(window._userLineSyncInFlight.values());
+        try { await Promise.all(ps); } catch (_) {}
+    }
+}
+
+// contenteditable에서 텍스트 기준 offset에 캐럿 배치 (단일 텍스트 노드 가정)
+function setCaretAt(el, charOffset) {
+    const sel = window.getSelection();
+    if (!sel) return;
+    sel.removeAllRanges();
+    const range = document.createRange();
+    const tn = el.firstChild;
+    if (tn && tn.nodeType === Node.TEXT_NODE) {
+        const off = Math.max(0, Math.min(charOffset, tn.length));
+        range.setStart(tn, off);
+        range.setEnd(tn, off);
+    } else {
+        range.selectNodeContents(el);
+        range.collapse(true);
+    }
+    sel.addRange(range);
 }
 
 function handleUserLineKey(ev, i, el) {
-    if (ev.key === 'Enter' && !ev.shiftKey) {
+    if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
         ev.preventDefault();
-        el.blur();
+        splitUserLineAt(i, el);
+    } else if (ev.key === 'Backspace' && !ev.shiftKey && !ev.isComposing) {
+        const sel = window.getSelection();
+        // 선택 영역이 있으면 기본 동작 (선택 영역만 지움)
+        if (sel && sel.isCollapsed) {
+            const offset = getCaretCharOffset(el);
+            if (offset === 0 && i > 0) {
+                ev.preventDefault();
+                mergeLineWithPrevious(i, el);
+            }
+        }
     } else if (ev.key === 'Escape') {
         ev.preventDefault();
-        el.innerText = window._splitLines[i];
+        el.innerText = (window._splitLines[i] || '');
         el.blur();
+    }
+}
+
+async function mergeLineWithPrevious(i, el) {
+    if (window._splitInFlight) return;
+    if (i <= 0) return;
+    if (!window._draftJobId) return;
+
+    // 현재 카드의 blur 저장 막기
+    if (el) el.onblur = null;
+
+    window._splitInFlight = true;
+    try {
+        // 다른 카드들의 dirty 입력을 먼저 sync (merge 응답이 다른 카드 텍스트를 덮어쓰지 않도록)
+        await flushActiveUserLineEdit();
+        // 합쳐진 후 캐럿이 갈 위치 = (sync 후) 이전 줄 끝의 문자 인덱스
+        const prevLen = (window._splitLines[i - 1] || '').length;
+        const resp = await authFetch(`/api/jobs/${window._draftJobId}/merge-line`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_index: i }),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ detail: '병합 실패' }));
+            showFriendlyError(err.detail || '병합 실패');
+            return;
+        }
+        const data = await resp.json();
+        window._splitLines = data.lines.map(l => l.text);
+        window._userLineSources = data.sources;
+        window._userLineStatuses = data.lines.map(l => l.status);
+        window._userLineDirty.clear();           // 서버 응답이 진실 — dirty 다 비움
+        window._splitGen += 1;
+        renderUserLines({ force: true });
+        // 합쳐진 카드(i-1)에 포커스 + 캐럿을 junction 위치(prevLen)에
+        const card = document.querySelector(`[data-line-index="${i - 1}"] .user-line-text`);
+        if (card) {
+            card.focus();
+            setCaretAt(card, prevLen);
+            card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
+    } finally {
+        window._splitInFlight = false;
+    }
+}
+
+async function deleteUserLine(i) {
+    if (window._splitInFlight) return;
+    if (!window._draftJobId) return;
+
+    window._splitInFlight = true;
+    try {
+        // 다른 카드들의 dirty 입력 먼저 sync (delete 응답이 그들 텍스트를 덮어쓰지 않도록)
+        await flushActiveUserLineEdit();
+        const resp = await authFetch(`/api/jobs/${window._draftJobId}/delete-line`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_index: i }),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ detail: '삭제 실패' }));
+            showFriendlyError(err.detail || '삭제 실패');
+            return;
+        }
+        const data = await resp.json();
+        window._splitLines = data.lines.map(l => l.text);
+        window._userLineSources = data.sources;
+        window._userLineStatuses = data.lines.map(l => l.status);
+        window._userLineDirty.clear();
+        window._splitGen += 1;
+        renderUserLines({ force: true });
+        // 윗 카드(i-1)로 포커스, 없으면(첫 카드 삭제) 새 첫 카드(0)로
+        const targetIdx = i > 0 ? i - 1 : 0;
+        const card = document.querySelector(`[data-line-index="${targetIdx}"] .user-line-text`);
+        if (card) {
+            card.focus();
+            setCaretAt(card, (window._splitLines[targetIdx] || '').length);
+            card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
+    } finally {
+        window._splitInFlight = false;
+    }
+}
+
+async function splitUserLineAt(i, el) {
+    if (window._splitInFlight) return;
+    if (!window._draftJobId) return;
+
+    // blur로 인한 stale save를 막기 위해 onblur 무력화
+    el.onblur = null;
+
+    // 캐럿 위치·전후 텍스트는 *지금* 캡쳐 (flush가 blur를 일으키지만 DOM 텍스트는 그대로)
+    const offset = getCaretCharOffset(el);
+    const full = el.innerText || '';
+    const before = full.slice(0, offset);
+    const after = full.slice(offset);
+
+    window._splitInFlight = true;
+    try {
+        // 다른 카드들의 dirty 입력을 먼저 서버에 sync — 그래야 서버 응답이 최신 텍스트를 담는다
+        await flushActiveUserLineEdit();
+        const resp = await authFetch(`/api/jobs/${window._draftJobId}/split-line`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_index: i, before, after }),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ detail: '분할 실패' }));
+            showFriendlyError(err.detail || '분할 실패');
+            return;
+        }
+        const data = await resp.json();
+        // 서버 진실로 클라이언트 상태 전면 교체
+        window._splitLines = data.lines.map(l => l.text);
+        window._userLineSources = data.sources;
+        window._userLineStatuses = data.lines.map(l => l.status);
+        window._userLineDirty.clear();
+        window._splitGen += 1;  // 진행 중 폴링 무효화
+        renderUserLines({ force: true });
+        // 새 카드(i+1)에 포커스 + 스크롤
+        const newCard = document.querySelector(`[data-line-index="${i + 1}"] .user-line-text`);
+        if (newCard) {
+            newCard.focus();
+            newCard.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
+    } finally {
+        window._splitInFlight = false;
     }
 }
 
 async function userLineGenerateAI(i) {
     if (!window._draftJobId) return;
+    // 서버가 script_json의 최신 텍스트로 프롬프트를 생성하도록 입력 sync 먼저
+    await flushActiveUserLineEdit();
     window._userLineStatuses[i] = 'pending';
     window._userLineSources[i] = 'ai';
     renderUserLines();
@@ -1638,6 +1916,8 @@ function userLineUploadClip(i) {
 
 async function batchGenerateMissingImages() {
     if (!window._draftJobId) return;
+    // 모든 빈 카드에 대해 서버가 최신 텍스트로 프롬프트를 만들도록 입력 sync 먼저
+    await flushActiveUserLineEdit();
     const missing = window._userLineSources.map((s, i) => (s === 'ai' && window._userLineStatuses[i] !== 'ready') ? i : -1).filter(i => i >= 0);
     if (missing.length === 0) {
         alert('비어 있는 줄이 없습니다.');
@@ -1666,11 +1946,14 @@ async function pollUserLineStatus(i) {
     // 이미지 파일 존재로 줄별 상태를 단순 폴링한다.
     if (!window._draftJobId) return;
     const jobId = window._draftJobId;
+    const startGen = window._splitGen || 0;  // 폴링 시작 시점의 분할 세대
     const maxTries = 60;  // ~120초
     for (let n = 0; n < maxTries; n++) {
         await new Promise(r => setTimeout(r, 2000));
         // 진행 중 다른 모드로 빠졌으면 중단
         if (window._draftJobId !== jobId) return;
+        // 분할이 일어났다면 즉시 종료 (인덱스가 시프트되어 자신의 i가 더는 같은 카드가 아닐 수 있음)
+        if ((window._splitGen || 0) !== startGen) return;
         try {
             const r = await authFetch(`/api/jobs/${jobId}`);
             if (!r.ok) continue;
@@ -1678,6 +1961,7 @@ async function pollUserLineStatus(i) {
             // 상태 자체보다는 이미지 URL HEAD로 확인
             const head = await fetch(`/api/jobs/${jobId}/images/${i}?t=${Date.now()}`, { method: 'HEAD' });
             if (head.ok) {
+                if ((window._splitGen || 0) !== startGen) return;  // race 마지막 가드
                 window._userLineStatuses[i] = 'ready';
                 window._userLineSources[i] = 'ai';
                 renderUserLines();
@@ -1686,13 +1970,28 @@ async function pollUserLineStatus(i) {
         } catch (e) { /* 폴링 실패는 무시 */ }
     }
     // 타임아웃: 한 줄 실패로 처리
-    window._userLineStatuses[i] = 'failed';
-    renderUserLines();
+    if ((window._splitGen || 0) === startGen) {
+        window._userLineStatuses[i] = 'failed';
+        renderUserLines();
+    }
 }
 
 async function proceedToTtsFromUserLines() {
-    // 모든 줄이 준비됐는지 검증
+    // 입력 중 글자가 서버에 sync되기 전에 다음 단계로 넘어가면 옛 텍스트로 검증/확정됨
+    await flushActiveUserLineEdit();
     const lines = window._splitLines || [];
+    // 1) 빈 카드 검증 우선 — 있으면 첫 빈 카드로 스크롤·포커스 후 진행 차단
+    const emptyIdx = lines.findIndex(s => !s || !s.trim());
+    if (emptyIdx >= 0) {
+        alert('비어 있는 줄이 있습니다. 내용을 채우고 다시 시도하세요.');
+        const card = document.querySelector(`[data-line-index="${emptyIdx}"]`);
+        if (card) {
+            card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            card.querySelector('.user-line-text')?.focus();
+        }
+        return;
+    }
+    // 2) 자산 매칭 확인
     const statuses = window._userLineStatuses || [];
     const missing = lines.map((_, i) => statuses[i] !== 'ready' ? i : -1).filter(i => i >= 0);
     if (missing.length > 0) {

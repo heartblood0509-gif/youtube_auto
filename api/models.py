@@ -164,6 +164,34 @@ class DraftJobResponse(BaseModel):
     job_id: str
 
 
+class SplitLineRequest(BaseModel):
+    """카드 B 카드 안에서 Enter로 줄 분할 요청."""
+    line_index: int = Field(..., ge=0)
+    before: str = Field(..., min_length=0, max_length=5000)
+    after: str = Field(..., min_length=0, max_length=5000)
+
+
+class SplitLineResponse(BaseModel):
+    lines: list[ScriptLine]
+    sources: list[Literal["ai", "image", "clip"]]
+
+
+class EditLineRequest(BaseModel):
+    """카드 B 줄 텍스트 편집 sync."""
+    line_index: int = Field(..., ge=0)
+    text: str = Field(..., min_length=0, max_length=5000)
+
+
+class MergeLineRequest(BaseModel):
+    """카드 B 병합 요청 — line_index 카드를 line_index-1과 합친다."""
+    line_index: int = Field(..., ge=1)
+
+
+class DeleteLineRequest(BaseModel):
+    """카드 B 줄 삭제 요청 (× 버튼)."""
+    line_index: int = Field(..., ge=0)
+
+
 class TtsPreviewBuildRequest(BaseModel):
     """음성 설정 단계에서 TTS를 미리 생성해 세션에 저장하는 요청."""
     sentences: list[str]

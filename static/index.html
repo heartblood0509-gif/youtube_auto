@@ -288,7 +288,7 @@
             <div class="card">
                 <div class="step-body">
                     <h2>2. 대본 입력</h2>
-                    <p class="subtitle">미리 준비한 대본을 그대로 붙여 넣어주세요. 문장 끝(마침표·물음표·느낌표) 또는 줄바꿈을 기준으로 자동으로 분리됩니다.</p>
+                    <p class="subtitle">미리 준비한 대본을 그대로 붙여 넣어주세요. 1차로 문장 단위 자동 분리가 되며, 카드 단계에서 Enter 키를 치면 그 자리에서 카드를 더 잘게 나눌 수 있습니다.</p>
                     <div class="form-group">
                         <label for="user-script">대본</label>
                         <textarea id="user-script" rows="10" maxlength="5000" placeholder="여기에 대본을 입력하거나 붙여넣기 하세요 (최대 5000자)." oninput="updateUserScriptCount()"></textarea>
@@ -306,7 +306,7 @@
         <section id="step-user-lines" class="card hidden step-section" data-step-id="step-user-lines">
             <div class="step-body">
                 <h2>줄별 자산 편집</h2>
-                <p class="subtitle">각 줄에 사용할 이미지나 영상을 올려주세요. 비어 있는 줄은 AI가 이미지를 만들어줍니다.</p>
+                <p class="subtitle">각 줄에 사용할 이미지나 영상을 올려주세요. 비어 있는 줄은 AI가 이미지를 만들어줍니다. 카드 안에서 Enter를 치면 그 위치에서 둘로 쪼개집니다.</p>
                 <div class="batch-actions">
                     <button class="btn-secondary" onclick="batchGenerateMissingImages()">🪄 비어 있는 줄 일괄 AI 생성</button>
                     <span class="text-dim" id="user-lines-status"></span>

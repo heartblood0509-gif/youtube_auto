@@ -5,18 +5,54 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, Literal
 from sqlalchemy.orm import Session
-from api.models import PreviewResponse, ClipPreviewResponse, ScriptLine
+from api.models import (
+    PreviewResponse,
+    ClipPreviewResponse,
+    ScriptLine,
+    SplitLineRequest,
+    SplitLineResponse,
+    EditLineRequest,
+    MergeLineRequest,
+    DeleteLineRequest,
+)
 from api.deps import get_approved_user, get_user_job
 from db.database import get_db
 from db.models import Job, User
 from config import settings
 from PIL import Image, ImageOps
+import asyncio
 import json
 import os
 import io
+import logging
 import subprocess
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/jobs", tags=["preview"])
+
+
+# ── 카드 B: 진행 중인 AI 이미지 생성 추적 (분할 시 경쟁 가드용) ──
+_AI_IN_FLIGHT: dict[str, set[int]] = {}
+_AI_IN_FLIGHT_LOCK = asyncio.Lock()
+
+
+async def _mark_ai_started(job_id: str, line_index: int) -> None:
+    async with _AI_IN_FLIGHT_LOCK:
+        _AI_IN_FLIGHT.setdefault(job_id, set()).add(line_index)
+
+
+async def _mark_ai_finished(job_id: str, line_index: int) -> None:
+    async with _AI_IN_FLIGHT_LOCK:
+        s = _AI_IN_FLIGHT.get(job_id)
+        if s:
+            s.discard(line_index)
+            if not s:
+                _AI_IN_FLIGHT.pop(job_id, None)
+
+
+def _ai_in_flight_count(job_id: str) -> int:
+    return len(_AI_IN_FLIGHT.get(job_id, set()))
 
 
 def _ffprobe_duration(path: str) -> float:
@@ -50,6 +86,302 @@ def _set_line_source(job: Job, line_index: int, source: Literal["ai", "image", "
         lines[line_index]["fail_reason"] = fail_reason
     job.line_sources_json = json.dumps(sources, ensure_ascii=False)
     job.script_json = json.dumps(lines, ensure_ascii=False)
+
+
+# ─────────────────────────────────────
+# 카드 B: 자산 시프트 보조 (병합·삭제에서 공유)
+# ─────────────────────────────────────
+
+
+def _shift_assets_down_in_place(job_dir: str, n_old: int, removed_index: int) -> list[tuple[str, str]]:
+    """removed_index 이후 자산 파일들을 -1 인덱스로 시프트. 성공한 rename 쌍을 반환 (롤백용)."""
+    renames: list[tuple[str, str]] = []
+    for i in range(removed_index + 1, n_old):
+        for sub, fname_old, fname_new in (
+            ("images", f"img_{i:02d}.png", f"img_{i - 1:02d}.png"),
+            ("clips", f"clip_raw_{i:02d}.mp4", f"clip_raw_{i - 1:02d}.mp4"),
+        ):
+            src = os.path.join(job_dir, sub, fname_old)
+            if not os.path.exists(src):
+                continue
+            dst = os.path.join(job_dir, sub, fname_new)
+            os.rename(src, dst)
+            renames.append((src, dst))
+    return renames
+
+
+def _delete_line_assets(job_dir: str, line_index: int) -> None:
+    """제거되는 줄의 자산 파일을 best-effort 삭제."""
+    for sub, fname in (
+        ("images", f"img_{line_index:02d}.png"),
+        ("clips", f"clip_raw_{line_index:02d}.mp4"),
+    ):
+        p = os.path.join(job_dir, sub, fname)
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+
+
+async def _r2_shift_down(job_id: str, job_dir: str, n_old: int, removed_index: int) -> None:
+    """R2 활성 시: removed_index 객체 삭제 + 이후 인덱스 -1 시프트 (best-effort)."""
+    from core.r2_storage import copy_object as r2_copy, delete_object as r2_delete, is_r2_enabled
+    if not is_r2_enabled():
+        return
+    # 제거되는 줄의 R2 객체 삭제
+    for sub, fname in (
+        ("images", f"img_{removed_index:02d}.png"),
+        ("clips", f"clip_raw_{removed_index:02d}.mp4"),
+    ):
+        try:
+            await r2_delete(f"jobs/{job_id}/{sub}/{fname}")
+        except Exception:
+            pass
+    # 시프트: 로컬에서 이미 -1로 이동된 항목만 R2도 시프트
+    for i in range(removed_index + 1, n_old):
+        for sub, fname_old, fname_new in (
+            ("images", f"img_{i:02d}.png", f"img_{i - 1:02d}.png"),
+            ("clips", f"clip_raw_{i:02d}.mp4", f"clip_raw_{i - 1:02d}.mp4"),
+        ):
+            if not os.path.exists(os.path.join(job_dir, sub, fname_new)):
+                continue
+            src_key = f"jobs/{job_id}/{sub}/{fname_old}"
+            dst_key = f"jobs/{job_id}/{sub}/{fname_new}"
+            try:
+                ok = await r2_copy(src_key, dst_key)
+                if ok:
+                    await r2_delete(src_key)
+            except Exception as e:
+                logger.warning("[shift-down] R2 시프트 실패 job=%s key=%s: %s", job_id, src_key, e)
+
+
+# ─────────────────────────────────────
+# 카드 B: 카드 안에서 Enter로 줄 분할 + 텍스트 sync
+# ─────────────────────────────────────
+
+
+@router.post("/{job_id}/split-line", response_model=SplitLineResponse)
+async def split_line(
+    body: SplitLineRequest,
+    job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_approved_user),
+):
+    """카드 B 전용: line_index 위치를 before/after 두 줄로 분리. 이후 인덱스 자산 파일은 +1 시프트."""
+    job = get_user_job(db, job_id, _user)
+    if job.generation_mode != "user_assets":
+        raise HTTPException(status_code=400, detail="이 작업은 카드 B 모드가 아닙니다")
+    if job.status != "preview_ready":
+        raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
+    if _ai_in_flight_count(job_id) > 0:
+        raise HTTPException(status_code=409, detail="AI 이미지 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
+
+    lines = json.loads(job.script_json or "[]")
+    sources = json.loads(job.line_sources_json or "[]")
+    n = len(lines)
+    if len(sources) != n:
+        raise HTTPException(status_code=400, detail="줄별 자산 정보가 올바르지 않습니다")
+    if not (0 <= body.line_index < n):
+        raise HTTPException(status_code=400, detail="잘못된 줄 인덱스")
+
+    L = body.line_index
+    cur = lines[L]
+    first = {**cur, "text": body.before}
+    second = {
+        "text": body.after,
+        "image_prompt": "",
+        "motion": "zoom_in",
+        "status": "pending",
+        "fail_reason": None,
+    }
+    new_lines = lines[:L] + [first, second] + lines[L + 1:]
+    new_sources = sources[:L] + [sources[L], "ai"] + sources[L + 1:]
+
+    # 자산 파일 시프트 — 역순으로 (높은 인덱스부터)
+    job_dir = os.path.join(settings.STORAGE_DIR, job_id)
+    renames: list[tuple[str, str]] = []
+    try:
+        for i in range(n - 1, L, -1):
+            for sub, fname_old, fname_new in (
+                ("images", f"img_{i:02d}.png", f"img_{i + 1:02d}.png"),
+                ("clips", f"clip_raw_{i:02d}.mp4", f"clip_raw_{i + 1:02d}.mp4"),
+            ):
+                src = os.path.join(job_dir, sub, fname_old)
+                if not os.path.exists(src):
+                    continue
+                dst = os.path.join(job_dir, sub, fname_new)
+                os.rename(src, dst)
+                renames.append((src, dst))
+    except OSError as e:
+        for src, dst in reversed(renames):
+            try:
+                os.rename(dst, src)
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"자산 파일 시프트 실패: {e}")
+
+    # R2 시프트 (활성화된 경우, best-effort)
+    from core.r2_storage import copy_object as r2_copy, delete_object as r2_delete, is_r2_enabled
+    if is_r2_enabled():
+        try:
+            for i in range(n - 1, L, -1):
+                for sub, fname_old, fname_new in (
+                    ("images", f"img_{i:02d}.png", f"img_{i + 1:02d}.png"),
+                    ("clips", f"clip_raw_{i:02d}.mp4", f"clip_raw_{i + 1:02d}.mp4"),
+                ):
+                    # 로컬에서 시프트된 항목만 R2도 시프트
+                    if not os.path.exists(os.path.join(job_dir, sub, fname_new)):
+                        continue
+                    src_key = f"jobs/{job_id}/{sub}/{fname_old}"
+                    dst_key = f"jobs/{job_id}/{sub}/{fname_new}"
+                    ok = await r2_copy(src_key, dst_key)
+                    if ok:
+                        await r2_delete(src_key)
+        except Exception as e:
+            logger.warning("[split-line] R2 시프트 일부 실패 job=%s: %s", job_id, e)
+
+    job.script_json = json.dumps(new_lines, ensure_ascii=False)
+    job.line_sources_json = json.dumps(new_sources, ensure_ascii=False)
+    db.commit()
+
+    return SplitLineResponse(
+        lines=[ScriptLine(**l) for l in new_lines],
+        sources=new_sources,
+    )
+
+
+@router.post("/{job_id}/edit-line")
+async def edit_line(
+    body: EditLineRequest,
+    job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_approved_user),
+):
+    """카드 B 전용: 줄 텍스트 편집을 서버 script_json에 sync. 빈 문자열 허용."""
+    job = get_user_job(db, job_id, _user)
+    if job.generation_mode != "user_assets":
+        raise HTTPException(status_code=400, detail="이 작업은 카드 B 모드가 아닙니다")
+    if job.status != "preview_ready":
+        raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
+
+    lines = json.loads(job.script_json or "[]")
+    if not (0 <= body.line_index < len(lines)):
+        raise HTTPException(status_code=400, detail="잘못된 줄 인덱스")
+    lines[body.line_index]["text"] = body.text
+    job.script_json = json.dumps(lines, ensure_ascii=False)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/{job_id}/merge-line", response_model=SplitLineResponse)
+async def merge_line(
+    body: MergeLineRequest,
+    job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_approved_user),
+):
+    """카드 B 전용: line_index 카드를 line_index-1 카드 끝에 이어 붙이고 line_index 카드를 제거.
+    이후 인덱스 자산 파일은 -1 시프트.
+    """
+    job = get_user_job(db, job_id, _user)
+    if job.generation_mode != "user_assets":
+        raise HTTPException(status_code=400, detail="이 작업은 카드 B 모드가 아닙니다")
+    if job.status != "preview_ready":
+        raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
+    if _ai_in_flight_count(job_id) > 0:
+        raise HTTPException(status_code=409, detail="AI 이미지 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
+
+    lines = json.loads(job.script_json or "[]")
+    sources = json.loads(job.line_sources_json or "[]")
+    n = len(lines)
+    if len(sources) != n:
+        raise HTTPException(status_code=400, detail="줄별 자산 정보가 올바르지 않습니다")
+    if not (1 <= body.line_index < n):
+        raise HTTPException(status_code=400, detail="잘못된 줄 인덱스")
+
+    L = body.line_index
+    # 텍스트 단순 연결 — 분할 때 보존된 공백을 그대로 복원
+    lines[L - 1]["text"] = (lines[L - 1].get("text") or "") + (lines[L].get("text") or "")
+
+    job_dir = os.path.join(settings.STORAGE_DIR, job_id)
+    _delete_line_assets(job_dir, L)
+    renames: list[tuple[str, str]] = []
+    try:
+        renames = _shift_assets_down_in_place(job_dir, n, L)
+    except OSError as e:
+        for src, dst in reversed(renames):
+            try:
+                os.rename(dst, src)
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"자산 파일 시프트 실패: {e}")
+
+    try:
+        await _r2_shift_down(job_id, job_dir, n, L)
+    except Exception as e:
+        logger.warning("[merge-line] R2 시프트 실패 job=%s: %s", job_id, e)
+
+    new_lines = lines[:L] + lines[L + 1:]
+    new_sources = sources[:L] + sources[L + 1:]
+    job.script_json = json.dumps(new_lines, ensure_ascii=False)
+    job.line_sources_json = json.dumps(new_sources, ensure_ascii=False)
+    db.commit()
+
+    return SplitLineResponse(
+        lines=[ScriptLine(**l) for l in new_lines],
+        sources=new_sources,
+    )
+
+
+@router.post("/{job_id}/delete-line", response_model=SplitLineResponse)
+async def delete_line(
+    body: DeleteLineRequest,
+    job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_approved_user),
+):
+    """카드 B 전용: line_index 카드 자체를 제거. 이후 인덱스 자산 파일은 -1 시프트."""
+    job = get_user_job(db, job_id, _user)
+    if job.generation_mode != "user_assets":
+        raise HTTPException(status_code=400, detail="이 작업은 카드 B 모드가 아닙니다")
+    if job.status != "preview_ready":
+        raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
+    if _ai_in_flight_count(job_id) > 0:
+        raise HTTPException(status_code=409, detail="AI 이미지 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
+
+    lines = json.loads(job.script_json or "[]")
+    sources = json.loads(job.line_sources_json or "[]")
+    n = len(lines)
+    if len(sources) != n:
+        raise HTTPException(status_code=400, detail="줄별 자산 정보가 올바르지 않습니다")
+    if not (0 <= body.line_index < n):
+        raise HTTPException(status_code=400, detail="잘못된 줄 인덱스")
+    if n <= 1:
+        raise HTTPException(status_code=400, detail="마지막 줄은 삭제할 수 없습니다")
+
+    L = body.line_index
+    job_dir = os.path.join(settings.STORAGE_DIR, job_id)
+    _delete_line_assets(job_dir, L)
+    try:
+        _shift_assets_down_in_place(job_dir, n, L)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"자산 파일 시프트 실패: {e}")
+    try:
+        await _r2_shift_down(job_id, job_dir, n, L)
+    except Exception as e:
+        logger.warning("[delete-line] R2 시프트 실패 job=%s: %s", job_id, e)
+
+    new_lines = lines[:L] + lines[L + 1:]
+    new_sources = sources[:L] + sources[L + 1:]
+    job.script_json = json.dumps(new_lines, ensure_ascii=False)
+    job.line_sources_json = json.dumps(new_sources, ensure_ascii=False)
+    db.commit()
+
+    return SplitLineResponse(
+        lines=[ScriptLine(**l) for l in new_lines],
+        sources=new_sources,
+    )
 
 
 @router.get("/{job_id}/preview", response_model=PreviewResponse)
@@ -341,7 +673,11 @@ async def _regenerate_single_image(job_id: str, line_index: int, korean_request:
     """백그라운드: 단일 이미지 재생성"""
     from jobs_queue.worker import regenerate_image_for_job
 
-    await regenerate_image_for_job(job_id, line_index, korean_request, english_prompt)
+    await _mark_ai_started(job_id, line_index)
+    try:
+        await regenerate_image_for_job(job_id, line_index, korean_request, english_prompt)
+    finally:
+        await _mark_ai_finished(job_id, line_index)
 
 
 # ─────────────────────────────────────
