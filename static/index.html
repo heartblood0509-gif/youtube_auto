@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Shorts Pick</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=7">
+    <link rel="stylesheet" href="/static/css/style.css?v=10">
 </head>
 <body class="has-navbar">
     <script>if(localStorage.getItem('theme')==='dark'||!localStorage.getItem('theme'))document.body.classList.add('dark');</script>
@@ -303,18 +303,43 @@
         </section>
 
         <!-- 카드 B: 줄별 자산 편집 -->
-        <section id="step-user-lines" class="card hidden step-section" data-step-id="step-user-lines">
+        <section id="step-user-lines" class="card hidden step-section user-lines-editor-section" data-step-id="step-user-lines">
             <div class="step-body">
-                <h2>줄별 자산 편집</h2>
-                <p class="subtitle">각 줄에 사용할 이미지나 영상을 올려주세요. 비어 있는 줄은 AI가 이미지를 만들어줍니다. 카드 안에서 Enter를 치면 그 위치에서 둘로 쪼개집니다.</p>
-                <div class="batch-actions">
-                    <button class="btn-secondary" onclick="batchGenerateMissingImages()">🪄 비어 있는 줄 일괄 AI 생성</button>
-                    <span class="text-dim" id="user-lines-status"></span>
-                </div>
-                <div id="user-lines-list" class="user-lines-list"></div>
-                <div class="btn-group">
-                    <button class="btn-secondary" onclick="backToUserScript()">이전 (대본 다시)</button>
-                    <button class="btn-primary" onclick="proceedToTtsFromUserLines()">다음: 음성 설정</button>
+                <div class="user-lines-layout">
+                    <div class="user-lines-editor-pane">
+                        <h2>줄별 자산 편집</h2>
+                        <p class="subtitle">각 줄에 사용할 이미지나 영상을 올려주세요. 비어 있는 줄은 AI가 이미지를 만들어줍니다. 카드 안에서 Enter를 치면 그 위치에서 둘로 쪼개집니다.</p>
+                        <div class="batch-actions">
+                            <button class="btn-secondary" onclick="batchGenerateMissingImages()">🪄 비어 있는 줄 일괄 AI 생성</button>
+                            <span class="text-dim" id="user-lines-status"></span>
+                        </div>
+                        <div id="user-lines-list" class="user-lines-list"></div>
+                        <div class="btn-group">
+                            <button class="btn-secondary" onclick="backToUserScript()">이전 (대본 다시)</button>
+                            <button class="btn-primary" onclick="proceedToTtsFromUserLines()">다음: 음성 설정</button>
+                        </div>
+                    </div>
+                    <aside class="user-lines-preview-pane" aria-label="선택 줄 자산 프리뷰">
+                        <div class="user-lines-preview-card">
+                            <div class="user-lines-preview-header">
+                                <div>
+                                    <p class="user-lines-preview-kicker">선택 줄 프리뷰</p>
+                                    <h3 id="user-line-preview-title">1번 줄</h3>
+                                </div>
+                                <span class="user-line-preview-pill" id="user-line-preview-source">대기</span>
+                            </div>
+                            <div class="shorts-preview-frame" id="user-line-preview-frame">
+                                <div class="shorts-preview-media" id="user-line-preview-media">
+                                    <span class="shorts-preview-empty">생성/업로드 대기</span>
+                                </div>
+                                <div class="shorts-preview-title">
+                                    <div class="shorts-preview-title-line1" id="user-line-preview-title-line1"></div>
+                                    <div class="shorts-preview-title-line2" id="user-line-preview-title-line2"></div>
+                                </div>
+                            </div>
+                            <p class="user-lines-preview-caption" id="user-line-preview-caption">자산이 준비되면 이곳에 9:16으로 표시됩니다.</p>
+                        </div>
+                    </aside>
                 </div>
             </div>
         </section>
@@ -322,6 +347,6 @@
     </div>
 
     <script src="/static/js/auth.js"></script>
-    <script src="/static/js/app.js?v=17"></script>
+    <script src="/static/js/app.js?v=20"></script>
 </body>
 </html>
