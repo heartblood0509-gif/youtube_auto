@@ -18,6 +18,8 @@ from api.models import (
 from api.deps import get_approved_user, get_user_job
 from db.database import get_db
 from db.models import Job, User
+from jobs_queue.task_queue import active_task_exists, enqueue_task, get_active_task, task_payload
+from core.r2_storage import require_r2_for_generation, is_r2_enabled, r2_file_exists
 from config import settings
 from PIL import Image, ImageOps
 from core.user_assets_visual import (
@@ -42,6 +44,13 @@ import subprocess
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/jobs", tags=["preview"])
+
+
+def _require_generation_storage():
+    try:
+        require_r2_for_generation()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 # ── 카드 B: 진행 중인 AI 이미지 생성 추적 (분할 시 경쟁 가드용) ──
@@ -80,6 +89,16 @@ def _ffprobe_duration(path: str) -> float:
     except Exception:
         pass
     return 0.0
+
+
+def _job_asset_exists(job_id: str, relative_path: str) -> bool:
+    local_path = os.path.join(settings.STORAGE_DIR, job_id, relative_path)
+    if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+        return True
+    if not is_r2_enabled():
+        return False
+    r2_key = f"jobs/{job_id}/{relative_path.replace(os.sep, '/')}"
+    return r2_file_exists(r2_key)
 
 
 def _set_line_source(job: Job, line_index: int, source: Literal["ai", "image", "clip"], *, status: str = "ready", fail_reason: Optional[str] = None) -> None:
@@ -227,7 +246,7 @@ async def split_line(
         raise HTTPException(status_code=400, detail="이 작업은 카드 B 모드가 아닙니다")
     if job.status != "preview_ready":
         raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
-    if _ai_in_flight_count(job_id) > 0:
+    if _ai_in_flight_count(job_id) > 0 or active_task_exists(db, job_id):
         raise HTTPException(status_code=409, detail="AI 자산 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
 
     lines = json.loads(job.script_json or "[]")
@@ -367,7 +386,7 @@ async def merge_line(
         raise HTTPException(status_code=400, detail="이 작업은 카드 B 모드가 아닙니다")
     if job.status != "preview_ready":
         raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
-    if _ai_in_flight_count(job_id) > 0:
+    if _ai_in_flight_count(job_id) > 0 or active_task_exists(db, job_id):
         raise HTTPException(status_code=409, detail="AI 자산 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
 
     lines = json.loads(job.script_json or "[]")
@@ -432,7 +451,7 @@ async def delete_line(
         raise HTTPException(status_code=400, detail="이 작업은 카드 B 모드가 아닙니다")
     if job.status != "preview_ready":
         raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
-    if _ai_in_flight_count(job_id) > 0:
+    if _ai_in_flight_count(job_id) > 0 or active_task_exists(db, job_id):
         raise HTTPException(status_code=409, detail="AI 자산 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
 
     lines = json.loads(job.script_json or "[]")
@@ -562,6 +581,7 @@ async def confirm_and_render(
     job = get_user_job(db, job_id, _user)
     if job.status not in ("preview_ready", "awaiting_confirmation"):
         raise HTTPException(status_code=400, detail=f"확정 불가 (상태: {job.status})")
+    _require_generation_storage()
 
     # ─── 카드 B 분기: 자산 실재 검증 + 음성/BGM 설정 흡수 ───
     if job.generation_mode == "user_assets":
@@ -575,12 +595,10 @@ async def confirm_and_render(
             if lines[i].get("status") != "ready":
                 raise HTTPException(status_code=400, detail=f"{i + 1}번째 줄의 자산이 아직 준비되지 않았습니다")
             if src == "clip":
-                p = os.path.join(job_dir, "clips", f"clip_raw_{i:02d}.mp4")
-                if not os.path.exists(p):
+                if not _job_asset_exists(job_id, os.path.join("clips", f"clip_raw_{i:02d}.mp4")):
                     raise HTTPException(status_code=400, detail=f"{i + 1}번째 줄에 영상이 없습니다")
             else:  # "ai" or "image"
-                p = os.path.join(job_dir, "images", f"img_{i:02d}.png")
-                if not os.path.exists(p):
+                if not _job_asset_exists(job_id, os.path.join("images", f"img_{i:02d}.png")):
                     raise HTTPException(status_code=400, detail=f"{i + 1}번째 줄에 이미지가 없습니다")
 
         # 음성/BGM 설정 흡수
@@ -628,8 +646,15 @@ async def confirm_and_render(
         job.status = "awaiting_confirmation"
         job.current_step = "영상 제작 준비 중..."
         db.commit()
-        background_tasks.add_task(_render_video_task, job_id)
-        return {"message": "영상 제작을 시작합니다", "job_id": job_id, "next": "render"}
+        task, already_running = enqueue_task(
+            db,
+            job=job,
+            kind="render_video",
+            payload={},
+            dedupe_key="render",
+            max_attempts=80,
+        )
+        return {"message": "영상 제작을 시작합니다", "job_id": job_id, "next": "render", "task_id": task.id, "already_running": already_running}
 
     # ─── 카드 A: 기존 흐름 ───
     job.video_mode = video_mode
@@ -639,15 +664,29 @@ async def confirm_and_render(
         job.status = "generating_clips"
         job.current_step = "AI 영상 클립 생성 준비 중..."
         db.commit()
-        background_tasks.add_task(_generate_clips_task, job_id)
-        return {"message": "AI 영상 클립 생성을 시작합니다", "job_id": job_id, "next": "clips"}
+        task, already_running = enqueue_task(
+            db,
+            job=job,
+            kind="card_a_clips",
+            payload={},
+            dedupe_key="card_a_clips",
+            max_attempts=80,
+        )
+        return {"message": "AI 영상 클립 생성을 시작합니다", "job_id": job_id, "next": "clips", "task_id": task.id, "already_running": already_running}
     else:
         # Ken Burns 모드: 바로 영상 조립
         job.status = "awaiting_confirmation"
         job.current_step = "영상 제작 준비 중..."
         db.commit()
-        background_tasks.add_task(_render_video_task, job_id)
-        return {"message": "영상 제작을 시작합니다", "job_id": job_id, "next": "render"}
+        task, already_running = enqueue_task(
+            db,
+            job=job,
+            kind="render_video",
+            payload={},
+            dedupe_key="render",
+            max_attempts=80,
+        )
+        return {"message": "영상 제작을 시작합니다", "job_id": job_id, "next": "render", "task_id": task.id, "already_running": already_running}
 
 
 class RegenerateRequest(BaseModel):
@@ -669,6 +708,7 @@ async def regenerate_image(
     카드 B에서는 Job 전체 상태를 바꾸지 않는다(한 줄 실패가 Job 전체 실패로 번지면 안 됨).
     """
     job = get_user_job(db, job_id, _user)
+    _require_generation_storage()
 
     lines = json.loads(job.script_json)
     ids_changed = ensure_line_ids(lines)
@@ -681,13 +721,36 @@ async def regenerate_image(
         job.status = "regenerating_image"
         db.commit()
     else:
+        if job.status != "preview_ready":
+            raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
+        if active_task_exists(db, job_id):
+            raise HTTPException(status_code=409, detail="AI 자산 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
+        if not (lines[line_index].get("text") or "").strip():
+            raise HTTPException(status_code=400, detail="빈 텍스트 줄은 이미지 생성할 수 없습니다")
         # 줄별 상태만 'pending'으로 표시 (UI에 로딩 스피너 등)
         set_line_asset_progress(lines[line_index], "ai_image", "queued", "AI 이미지 생성 대기 중")
         job.script_json = json.dumps(lines, ensure_ascii=False)
         db.commit()
 
-    background_tasks.add_task(_regenerate_single_image, job_id, line_index, body.korean_request, body.english_prompt)
-    return {"message": f"이미지 {line_index + 1} 재생성 시작"}
+    line_id = lines[line_index].get("line_id")
+    task, already_running = enqueue_task(
+        db,
+        job=job,
+        kind="regenerate_image",
+        payload={
+            "line_index": line_index,
+            "line_id": line_id,
+            "korean_request": body.korean_request,
+            "english_prompt": body.english_prompt,
+        },
+        dedupe_key=f"image:{line_id or line_index}",
+        max_attempts=80,
+    )
+    return {
+        "message": f"이미지 {line_index + 1} 재생성 시작",
+        "task_id": task.id,
+        "already_running": already_running,
+    }
 
 
 @router.post("/{job_id}/generate-missing-images")
@@ -699,8 +762,27 @@ async def generate_missing_images(
 ):
     """카드 B 전용: line_sources가 'ai'이고 이미지 파일이 없는 줄을 일괄 생성한다."""
     job = get_user_job(db, job_id, _user)
+    _require_generation_storage()
     if job.generation_mode != "user_assets":
         raise HTTPException(status_code=400, detail="이 작업은 카드 B 모드가 아닙니다")
+    if job.status != "preview_ready":
+        raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
+
+    existing = get_active_task(db, job_id, kind="card_b_missing_images", dedupe_key="missing_images")
+    if existing:
+        payload = task_payload(existing)
+        queued_ids = set(payload.get("line_ids") or [])
+        current_lines = json.loads(job.script_json or "[]")
+        queued_indexes = [
+            i for i, line in enumerate(current_lines)
+            if str(line.get("line_id")) in queued_ids
+        ]
+        return {
+            "queued": queued_indexes,
+            "task_id": existing.id,
+            "status": existing.status,
+            "already_running": True,
+        }
 
     lines = json.loads(job.script_json or "[]")
     ids_changed = ensure_line_ids(lines)
@@ -708,18 +790,23 @@ async def generate_missing_images(
     if len(sources) != len(lines):
         raise HTTPException(status_code=400, detail="줄별 자산 정보가 올바르지 않습니다")
 
-    job_dir = os.path.join(settings.STORAGE_DIR, job_id)
-    images_dir = os.path.join(job_dir, "images")
+    images_dir = os.path.join(settings.STORAGE_DIR, job_id, "images")
     os.makedirs(images_dir, exist_ok=True)
 
     queued = []
+    queued_line_ids = []
     for i, src in enumerate(sources):
         if src != "ai":
             continue
-        img_path = os.path.join(images_dir, f"img_{i:02d}.png")
-        if os.path.exists(img_path):
+        if not (lines[i].get("text") or "").strip():
+            raise HTTPException(status_code=400, detail=f"{i + 1}번째 줄이 비어 있습니다")
+        has_asset = _job_asset_exists(job_id, os.path.join("images", f"img_{i:02d}.png"))
+        if has_asset:
+            if lines[i].get("status") != "ready":
+                mark_line_asset_ready(lines[i])
             continue
         queued.append(i)
+        queued_line_ids.append(str(lines[i].get("line_id")))
         set_line_asset_progress(lines[i], "ai_image", "queued", "AI 이미지 생성 대기 중")
 
     job.script_json = json.dumps(lines, ensure_ascii=False)
@@ -727,10 +814,28 @@ async def generate_missing_images(
         invalidate_visual_plan(job)
     db.commit()
 
+    task = None
+    already_running = False
     if queued:
-        background_tasks.add_task(_regenerate_missing_images_sequence, job_id, queued)
+        task, already_running = enqueue_task(
+            db,
+            job=job,
+            kind="card_b_missing_images",
+            payload={
+                "line_indexes": queued,
+                "line_ids": queued_line_ids,
+                "completed_line_ids": [],
+            },
+            dedupe_key="missing_images",
+            max_attempts=120,
+        )
 
-    return {"queued": queued}
+    return {
+        "queued": queued,
+        "task_id": task.id if task else None,
+        "status": task.status if task else "completed",
+        "already_running": already_running,
+    }
 
 
 @router.post("/{job_id}/upload-image/{line_index}")
@@ -743,6 +848,9 @@ async def upload_image(
 ):
     """사용자 이미지 업로드 — AI 이미지 대체"""
     job = get_user_job(db, job_id, _user)
+    _require_generation_storage()
+    if active_task_exists(db, job_id):
+        raise HTTPException(status_code=409, detail="AI 자산 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
 
     lines = json.loads(job.script_json)
     if line_index < 0 or line_index >= len(lines):
@@ -794,7 +902,9 @@ async def upload_image(
 
     from core.r2_storage import upload_file as r2_upload, is_r2_enabled
     if is_r2_enabled():
-        await r2_upload(output_path, f"jobs/{job_id}/images/img_{line_index:02d}.png")
+        ok = await r2_upload(output_path, f"jobs/{job_id}/images/img_{line_index:02d}.png")
+        if not ok:
+            raise HTTPException(status_code=500, detail="R2 이미지 업로드 실패")
 
     return {"message": f"이미지 {line_index + 1} 업로드 완료", "image_url": f"/api/jobs/{job_id}/images/{line_index}"}
 
@@ -882,6 +992,7 @@ async def regenerate_clip(
 ):
     """특정 AI 클립 재생성"""
     job = get_user_job(db, job_id, _user)
+    _require_generation_storage()
 
     lines = json.loads(job.script_json)
     if line_index < 0 or line_index >= len(lines):
@@ -890,6 +1001,8 @@ async def regenerate_clip(
     if job.generation_mode == "user_assets":
         if job.status != "preview_ready":
             raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
+        if active_task_exists(db, job_id):
+            raise HTTPException(status_code=409, detail="AI 자산 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
 
         sources = json.loads(job.line_sources_json or "[]")
         if len(sources) != len(lines):
@@ -901,7 +1014,7 @@ async def regenerate_clip(
 
         job_dir = os.path.join(settings.STORAGE_DIR, job_id)
         image_path = os.path.join(job_dir, "images", f"img_{line_index:02d}.png")
-        if not os.path.exists(image_path):
+        if not _job_asset_exists(job_id, os.path.join("images", f"img_{line_index:02d}.png")):
             raise HTTPException(status_code=400, detail=f"{line_index + 1}번째 줄에 이미지가 없습니다")
 
         clip_path = os.path.join(job_dir, "clips", f"clip_raw_{line_index:02d}.mp4")
@@ -917,8 +1030,20 @@ async def regenerate_clip(
         job.script_json = json.dumps(lines, ensure_ascii=False)
         db.commit()
 
-    background_tasks.add_task(_regenerate_single_clip, job_id, line_index)
-    return {"message": f"클립 {line_index + 1} 재생성 시작"}
+    line_id = lines[line_index].get("line_id")
+    task, already_running = enqueue_task(
+        db,
+        job=job,
+        kind="regenerate_clip",
+        payload={"line_index": line_index, "line_id": line_id},
+        dedupe_key=f"clip:{line_id or line_index}",
+        max_attempts=80,
+    )
+    return {
+        "message": f"클립 {line_index + 1} 재생성 시작",
+        "task_id": task.id,
+        "already_running": already_running,
+    }
 
 
 @router.post("/{job_id}/confirm-clips")
@@ -932,13 +1057,21 @@ async def confirm_clips_and_render(
     job = get_user_job(db, job_id, _user)
     if job.status not in ("clips_ready", "awaiting_confirmation"):
         raise HTTPException(status_code=400, detail=f"확정 불가 (상태: {job.status})")
+    _require_generation_storage()
 
     job.status = "awaiting_confirmation"
     job.current_step = "영상 제작 준비 중..."
     db.commit()
 
-    background_tasks.add_task(_render_video_task, job_id)
-    return {"message": "영상 제작을 시작합니다", "job_id": job_id}
+    task, already_running = enqueue_task(
+        db,
+        job=job,
+        kind="render_video",
+        payload={},
+        dedupe_key="render",
+        max_attempts=80,
+    )
+    return {"message": "영상 제작을 시작합니다", "job_id": job_id, "task_id": task.id, "already_running": already_running}
 
 
 @router.post("/{job_id}/upload-clip/{line_index}")
@@ -951,6 +1084,9 @@ async def upload_clip(
 ):
     """사용자 영상 업로드 — AI 클립 대체"""
     job = get_user_job(db, job_id, _user)
+    _require_generation_storage()
+    if active_task_exists(db, job_id):
+        raise HTTPException(status_code=409, detail="AI 자산 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
 
     lines = json.loads(job.script_json)
     if line_index < 0 or line_index >= len(lines):
@@ -1016,7 +1152,9 @@ async def upload_clip(
     from core.r2_storage import upload_file as r2_upload, is_r2_enabled
     clip_output = os.path.join(clips_dir, f"clip_raw_{line_index:02d}.mp4")
     if is_r2_enabled() and os.path.exists(clip_output):
-        await r2_upload(clip_output, f"jobs/{job_id}/clips/clip_raw_{line_index:02d}.mp4")
+        ok = await r2_upload(clip_output, f"jobs/{job_id}/clips/clip_raw_{line_index:02d}.mp4")
+        if not ok:
+            raise HTTPException(status_code=500, detail="R2 영상 업로드 실패")
 
     return {"message": f"클립 {line_index + 1} 업로드 완료", "clip_url": f"/api/jobs/{job_id}/clips/{line_index}"}
 

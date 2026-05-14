@@ -10,6 +10,7 @@ from api.routes.assets import bgm_router
 from config import settings
 import logging
 import os
+import asyncio
 
 logging.basicConfig(level=logging.INFO)
 
@@ -28,9 +29,23 @@ async def lifespan(app: FastAPI):
     init_db()
     os.makedirs(settings.STORAGE_DIR, exist_ok=True)
     os.makedirs(settings.BGM_DIR, exist_ok=True)
+    from jobs_queue.task_worker import task_worker_loop
+
+    stop_event = asyncio.Event()
+    worker_task = asyncio.create_task(task_worker_loop(stop_event))
+    app.state.task_worker_stop = stop_event
+    app.state.task_worker_task = worker_task
     print(f"\n  AI 쇼츠 자동 제작 웹앱 시작!")
     print(f"  http://localhost:8000\n")
-    yield
+    try:
+        yield
+    finally:
+        stop_event.set()
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="AI 쇼츠 자동 제작", lifespan=lifespan)

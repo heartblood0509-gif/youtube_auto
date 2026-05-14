@@ -13,6 +13,7 @@ from api.models import UserProductResponse
 from config import settings
 from core.r2_storage import (
     is_r2_enabled,
+    require_r2_for_generation,
     r2_file_exists,
     stream_from_r2,
     upload_file as r2_upload,
@@ -44,6 +45,11 @@ async def upload_product(
     user: User = Depends(get_approved_user),
 ):
     """제품 이미지 업로드 — 1024px 리사이즈 후 PNG로 저장"""
+    try:
+        require_r2_for_generation()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
     name = (name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="제품명을 입력해주세요")

@@ -12,7 +12,7 @@ from config import settings
 from core.video_assembler import get_duration
 from core.r2_storage import (
     is_r2_enabled, r2_file_exists, stream_from_r2,
-    generate_presigned_url, upload_file as r2_upload,
+    generate_presigned_url, upload_file as r2_upload, require_r2_for_generation,
 )
 from core.time_utils import utc_now_naive
 from api.deps import get_approved_user, get_user_job
@@ -40,7 +40,7 @@ def _mark_expired_if_old(db: Session, job_id: str):
 @router.get("/{job_id}/images/{idx}")
 async def get_image(
     job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
-    idx: int = Path(..., ge=0, le=20),
+    idx: int = Path(..., ge=0, le=100),
     db: Session = Depends(get_db),
     _user: User = Depends(get_approved_user),
 ):
@@ -140,6 +140,10 @@ async def upload_bgm(
     _user: User = Depends(get_approved_user),
 ):
     """BGM 업로드 → ffprobe 검증 → R2 저장 → DB 기록"""
+    try:
+        require_r2_for_generation()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     # 확장자 체크
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in (".mp3", ".wav", ".ogg"):

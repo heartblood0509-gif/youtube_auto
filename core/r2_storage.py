@@ -12,7 +12,25 @@ _r2_client = None
 
 
 def is_r2_enabled() -> bool:
-    return bool(settings.R2_BUCKET_NAME)
+    return bool(
+        settings.R2_BUCKET_NAME
+        and settings.R2_ENDPOINT_URL
+        and settings.R2_ACCESS_KEY_ID
+        and settings.R2_SECRET_ACCESS_KEY
+    )
+
+
+def is_r2_required_for_generation() -> bool:
+    """Railway/PostgreSQL 운영 모드는 로컬 디스크를 영구 저장소로 신뢰하지 않는다."""
+    return bool(settings.DATABASE_URL)
+
+
+def require_r2_for_generation() -> None:
+    if is_r2_required_for_generation() and not is_r2_enabled():
+        raise RuntimeError(
+            "Railway/PostgreSQL 환경에서는 R2 설정이 필요합니다. "
+            "R2_ENDPOINT_URL, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME을 모두 설정해주세요."
+        )
 
 
 def get_r2_client():
@@ -200,5 +218,43 @@ async def delete_job_files(job_id: str):
                 )
         except Exception as e:
             logger.error(f"R2 delete failed for job {job_id}: {e}")
+
+    await asyncio.to_thread(_delete_sync)
+
+
+async def delete_job_intermediate_files(job_id: str) -> None:
+    """완료 후 R2 용량 절감을 위해 최종 output을 제외한 중간 산출물을 삭제."""
+    if not is_r2_enabled():
+        return
+
+    prefixes = [
+        f"jobs/{job_id}/images/",
+        f"jobs/{job_id}/clips/",
+        f"jobs/{job_id}/tts/",
+        f"jobs/{job_id}/temp/",
+    ]
+
+    def _delete_sync():
+        client = get_r2_client()
+        for prefix in prefixes:
+            token = None
+            while True:
+                kwargs = {"Bucket": settings.R2_BUCKET_NAME, "Prefix": prefix}
+                if token:
+                    kwargs["ContinuationToken"] = token
+                try:
+                    resp = client.list_objects_v2(**kwargs)
+                    objects = resp.get("Contents", [])
+                    if objects:
+                        client.delete_objects(
+                            Bucket=settings.R2_BUCKET_NAME,
+                            Delete={"Objects": [{"Key": obj["Key"]} for obj in objects]},
+                        )
+                    if not resp.get("IsTruncated"):
+                        break
+                    token = resp.get("NextContinuationToken")
+                except Exception as e:
+                    logger.warning(f"R2 intermediate delete failed for {prefix}: {e}")
+                    break
 
     await asyncio.to_thread(_delete_sync)

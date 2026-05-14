@@ -78,7 +78,8 @@ Railway 무료 플랜은 제한이 심합니다. Pro 플랜 필요.
 |------|-----|------|
 | `DATABASE_URL` | **"Add Reference"로 PostgreSQL 연결** (아래 설명) | DB 연결 |
 | `JWT_SECRET` | 터미널에서 `python -c "import secrets; print(secrets.token_hex(32))"` 실행한 결과 | 보안 키 |
-| `GEMINI_API_KEY` | 본인의 Gemini API 키 | AI 기능 (서버 기본 키, 사용자가 개별 키 미설정 시 사용) |
+
+> `GEMINI_API_KEY`, `TYPECAST_API_KEY`, `FAL_KEY`는 설정하지 않습니다. 외부 생성 API는 서버 기본 키 없이 사용자별 저장 키만 사용합니다.
 
 **DATABASE_URL 연결 방법:**
 1. Variables 탭에서 **"Add Reference Variable"** 클릭 (또는 "+" 버튼)
@@ -111,10 +112,10 @@ Railway 무료 플랜은 제한이 심합니다. Pro 플랜 필요.
 | `KAKAO_CLIENT_SECRET` | 카카오 로그인 사용 시 | 위와 동일 |
 | `SMTP_USER` | 비밀번호 재설정 이메일 사용 시 | Gmail 주소 |
 | `SMTP_PASSWORD` | 비밀번호 재설정 이메일 사용 시 | [Gmail 앱 비밀번호](https://myaccount.google.com/apppasswords) |
-| `R2_ENDPOINT_URL` | R2 스토리지 사용 시 (권장) | Cloudflare R2 대시보드 |
-| `R2_ACCESS_KEY_ID` | R2 스토리지 사용 시 | Cloudflare R2 API Token |
-| `R2_SECRET_ACCESS_KEY` | R2 스토리지 사용 시 | 위와 동일 |
-| `R2_BUCKET_NAME` | R2 스토리지 사용 시 | 본인이 만든 버킷 이름 |
+| `R2_ENDPOINT_URL` | Railway/PostgreSQL 운영 시 필수 | Cloudflare R2 대시보드 |
+| `R2_ACCESS_KEY_ID` | Railway/PostgreSQL 운영 시 필수 | Cloudflare R2 API Token |
+| `R2_SECRET_ACCESS_KEY` | Railway/PostgreSQL 운영 시 필수 | 위와 동일 |
+| `R2_BUCKET_NAME` | Railway/PostgreSQL 운영 시 필수 | 본인이 만든 버킷 이름 |
 
 ### 4-3. 재배포
 
@@ -153,14 +154,14 @@ Google 로그인을 사용하려면:
 
 ---
 
-## 7단계: Cloudflare R2 설정 (권장)
+## 7단계: Cloudflare R2 설정 (필수)
 
 R2를 설정하면:
 - 생성된 이미지/영상이 재배포 후에도 보존됩니다
 - 사용자가 업로드한 BGM이 영구 보관됩니다
 - 30일 히스토리로 재다운로드가 가능합니다
 
-> R2 없이도 기본 동작은 가능하지만, 재배포 시 모든 생성 파일이 사라지고 BGM 업로드가 불가합니다.
+> Railway/PostgreSQL 운영 환경에서는 R2 4개 환경변수가 모두 설정되어야 이미지/영상 생성과 업로드가 시작됩니다.
 
 ### 7-1. R2 버킷 생성
 

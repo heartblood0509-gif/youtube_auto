@@ -97,9 +97,9 @@ FAL_QUEUE_URL = "https://queue.fal.run"
 
 
 def _headers(api_key: str = None) -> dict:
-    key = api_key or settings.FAL_KEY
+    key = api_key
     if not key:
-        raise RuntimeError("fal.ai API 키가 설정되지 않았습니다")
+        raise RuntimeError("fal.ai API 키가 설정되지 않았습니다. 설정 화면에서 사용자 본인의 FAL API 키를 저장해주세요.")
     return {
         "Authorization": f"Key {key}",
         "Content-Type": "application/json",

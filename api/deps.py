@@ -66,7 +66,10 @@ def get_current_admin(user: User = Depends(get_approved_user)) -> User:
 
 
 def resolve_user_api_keys(db: Session, user_id: str | None) -> dict:
-    """사용자 키 복호화 반환. 미설정 키만 서버 기본 키로 폴백."""
+    """사용자 키 복호화 반환.
+
+    Gemini/Typecast/FAL 모두 서버 기본 키를 쓰지 않고 반드시 사용자 본인 키만 사용한다.
+    """
     keys = {"gemini": None, "typecast": None, "fal": None}
     if user_id:
         user = db.query(User).filter(User.id == user_id).first()
@@ -77,11 +80,5 @@ def resolve_user_api_keys(db: Session, user_id: str | None) -> dict:
                 keys["typecast"] = decrypt_api_key(user.typecast_api_key_enc)
             if user.fal_key_enc:
                 keys["fal"] = decrypt_api_key(user.fal_key_enc)
-    # 사용자 키 없는 경우만 서버 기본 키 폴백
-    if not keys["gemini"]:
-        keys["gemini"] = settings.GEMINI_API_KEY or None
-    if not keys["typecast"]:
-        keys["typecast"] = settings.TYPECAST_API_KEY or None
-    if not keys["fal"]:
-        keys["fal"] = settings.FAL_KEY or None
+    # 외부 생성 API는 모두 사용자 본인 키만 사용한다. 서버 기본 키 폴백 금지.
     return keys

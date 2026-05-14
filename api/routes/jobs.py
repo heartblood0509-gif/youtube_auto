@@ -6,10 +6,12 @@ from sqlalchemy.orm import Session
 from api.models import JobCreateRequest, JobResponse, JobStatus, DraftJobRequest, DraftJobResponse
 from api.deps import get_approved_user, get_user_job, get_user_job_by_uid
 from db.database import get_db
-from db.models import Job, User, UserProduct
+from db.models import Job, JobTask, User, UserProduct
 from config import settings
 from core.time_utils import utc_isoformat, utc_now_naive
 from core.user_assets_visual import new_line_id
+from core.r2_storage import require_r2_for_generation
+from jobs_queue.task_queue import enqueue_task
 import asyncio
 import glob
 import json
@@ -20,9 +22,16 @@ import uuid
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
 
+def _require_generation_storage():
+    try:
+        require_r2_for_generation()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
 def _job_to_response(job: Job, user_map: dict | None = None) -> JobResponse:
     video_url = None
-    if job.video_path and os.path.exists(job.video_path):
+    if job.video_path and (os.path.exists(job.video_path) or getattr(job, "r2_synced", "") == "synced"):
         video_url = f"/api/jobs/{job.id}/video"
 
     files_expired = bool(job.files_expired_at)
@@ -89,6 +98,7 @@ async def create_job(
     _user: User = Depends(get_approved_user),
 ):
     """작업 생성 → 이미지 생성 시작"""
+    _require_generation_storage()
     # Job ID를 미리 생성 (스냅샷 경로 계산용)
     job_id = uuid.uuid4().hex[:12]
 
@@ -171,8 +181,14 @@ async def create_job(
             db.commit()
             print(f"[create_job] TTS 세션 이동 실패, 재생성 경로로 폴백: {e}")
 
-    # 백그라운드에서 이미지 생성 시작
-    background_tasks.add_task(_generate_images_task, job.id)
+    enqueue_task(
+        db,
+        job=job,
+        kind="card_a_images",
+        payload={},
+        dedupe_key="card_a_images",
+        max_attempts=80,
+    )
 
     return _job_to_response(job)
 
@@ -343,6 +359,7 @@ async def retry_images(
     _user: User = Depends(get_approved_user),
 ):
     """실패한 이미지 생성 재시도"""
+    _require_generation_storage()
     job = get_user_job(db, job_id, _user)
 
     # 이미 진행 중이면 거부
@@ -358,8 +375,49 @@ async def retry_images(
     job.error_message = None
     db.commit()
 
-    background_tasks.add_task(_generate_images_task, job_id)
-    return {"message": "이미지 생성 재시도 시작"}
+    task, already_running = enqueue_task(
+        db,
+        job=job,
+        kind="card_a_images",
+        payload={"retry": True},
+        dedupe_key="card_a_images",
+        max_attempts=80,
+    )
+    return {"message": "이미지 생성 재시도 시작", "task_id": task.id, "already_running": already_running}
+
+
+@router.get("/{job_id}/tasks/{task_id}")
+async def get_task_status(
+    job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
+    task_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_approved_user),
+):
+    """작업 큐 상태 조회."""
+    get_user_job(db, job_id, _user)
+    task = db.query(JobTask).filter(JobTask.id == task_id, JobTask.job_id == job_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="작업 큐를 찾을 수 없습니다")
+    try:
+        payload = json.loads(task.payload_json or "{}")
+    except Exception:
+        payload = {}
+    line_ids = payload.get("line_ids") or []
+    completed = payload.get("completed_line_ids") or []
+    return {
+        "task_id": task.id,
+        "job_id": task.job_id,
+        "kind": task.kind,
+        "status": task.status,
+        "attempt_count": task.attempt_count,
+        "max_attempts": task.max_attempts,
+        "next_run_at": utc_isoformat(task.next_run_at),
+        "current_line_index": payload.get("current_line_index"),
+        "total": len(line_ids),
+        "completed": len(completed),
+        "error": task.error_message,
+        "payload": payload,
+    }
 
 
 async def _generate_images_task(job_id: str):
