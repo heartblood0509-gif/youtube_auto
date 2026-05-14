@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 import uuid
 from typing import Any
 
@@ -82,9 +83,18 @@ def clear_line_asset_progress(line: dict[str, Any]) -> None:
         line.pop(key, None)
 
 
-def mark_line_asset_ready(line: dict[str, Any]) -> None:
+def bump_line_asset_version(line: dict[str, Any]) -> int:
+    current = int(line.get("asset_version") or 0)
+    next_version = max(current + 1, int(time.time() * 1000))
+    line["asset_version"] = next_version
+    return next_version
+
+
+def mark_line_asset_ready(line: dict[str, Any], *, bump_version: bool = False) -> None:
     line["status"] = "ready"
     line["fail_reason"] = None
+    if bump_version:
+        bump_line_asset_version(line)
     clear_line_asset_progress(line)
 
 

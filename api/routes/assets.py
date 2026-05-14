@@ -48,12 +48,12 @@ async def get_image(
     get_user_job(db, job_id, _user)
     path = os.path.join(settings.STORAGE_DIR, job_id, "images", f"img_{idx:02d}.png")
 
-    if os.path.exists(path):
-        return FileResponse(path, media_type="image/png")
-
     r2_key = f"jobs/{job_id}/images/img_{idx:02d}.png"
     if is_r2_enabled() and r2_file_exists(r2_key):
         return StreamingResponse(stream_from_r2(r2_key), media_type="image/png")
+
+    if os.path.exists(path):
+        return FileResponse(path, media_type="image/png")
 
     _mark_expired_if_old(db, job_id)
     raise HTTPException(status_code=404, detail="이미지를 찾을 수 없습니다")

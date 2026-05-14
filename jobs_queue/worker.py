@@ -300,7 +300,7 @@ async def regenerate_clip_for_job(job_id: str, line_index: int):
                     while len(sources) < len(lines):
                         sources.append("ai")
                     sources[line_index] = "clip"
-                    mark_line_asset_ready(lines[line_index])
+                    mark_line_asset_ready(lines[line_index], bump_version=True)
                     job.line_sources_json = json.dumps(sources[: len(lines)], ensure_ascii=False)
                     job.script_json = json.dumps(lines, ensure_ascii=False)
                     db.commit()
@@ -614,7 +614,7 @@ async def regenerate_image_for_job(job_id: str, line_index: int, korean_request:
                 db.refresh(job)
                 lines = json.loads(job.script_json or "[]")
                 if line_index < len(lines):
-                    mark_line_asset_ready(lines[line_index])
+                    mark_line_asset_ready(lines[line_index], bump_version=True)
                     job.script_json = json.dumps(lines, ensure_ascii=False)
                     db.commit()
 

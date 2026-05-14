@@ -1473,6 +1473,7 @@ async function splitUserScript() {
         // 줄별 자산 출처 (클라 캐시) — 'ai'|'image'|'clip'
         window._userLineSources = data.lines.map(() => 'ai');
         window._userLineProgress = data.lines.map(() => null);
+        window._userLineAssetVersions = data.lines.map(() => 0);
         window._batchUserLineQueue = null;
         window._activeUserLineIndex = 0;
 
@@ -1506,6 +1507,33 @@ function normalizeUserLineProgress(line) {
 
 function syncUserLineProgressFromLines(lines) {
     window._userLineProgress = (lines || []).map(normalizeUserLineProgress);
+}
+
+function normalizeUserLineAssetVersion(line) {
+    const version = Number(line?.asset_version || 0);
+    return Number.isFinite(version) && version > 0 ? version : 0;
+}
+
+function syncUserLineAssetVersionsFromLines(lines) {
+    window._userLineAssetVersions = (lines || []).map(normalizeUserLineAssetVersion);
+}
+
+function setUserLineAssetVersion(i, version) {
+    if (!window._userLineAssetVersions) window._userLineAssetVersions = [];
+    const normalized = Number(version || 0);
+    if (Number.isFinite(normalized) && normalized > 0) {
+        window._userLineAssetVersions[i] = normalized;
+    }
+}
+
+function getUserLineAssetVersion(i) {
+    return (window._userLineAssetVersions || [])[i] || 0;
+}
+
+function userLineMediaUrl(kind, jobId, i) {
+    const version = getUserLineAssetVersion(i);
+    const query = version ? `?v=${encodeURIComponent(version)}` : '';
+    return `/api/jobs/${jobId}/${kind}/${i}${query}`;
 }
 
 function setUserLineProgress(i, action, step, message) {
@@ -1570,6 +1598,7 @@ function syncUserLineStateFromResponse(lines, sources) {
     window._userLineSources = sources || [];
     window._userLineStatuses = (lines || []).map(l => l.status);
     syncUserLineProgressFromLines(lines || []);
+    syncUserLineAssetVersionsFromLines(lines || []);
 }
 
 function updateBatchGenerateButton() {
@@ -1637,7 +1666,7 @@ function renderUserLinePreview() {
     const progress = getUserLineProgress(i);
     const working = isUserLineWorking(i, status);
     const label = getUserLineSourceLabel(source, status, progress);
-    const ts = Date.now();
+    const version = getUserLineAssetVersion(i);
 
     title.textContent = `${i + 1}번 줄`;
     sourcePill.textContent = label;
@@ -1654,19 +1683,114 @@ function renderUserLinePreview() {
         caption.textContent = `${i + 1}번 줄은 아직 자산이 준비되지 않았습니다.`;
     }
 
+    const mediaKey = `${jobId}:${i}:${source}:${status}:${version}`;
+    if (media.dataset.mediaKey === mediaKey) return;
+
     if (source === 'clip' && status === 'ready') {
-        media.innerHTML = `<video src="/api/jobs/${jobId}/clips/${i}?t=${ts}" autoplay muted loop playsinline></video>`;
+        media.innerHTML = `<video src="${userLineMediaUrl('clips', jobId, i)}" autoplay muted loop playsinline></video>`;
     } else if ((source === 'image' || source === 'ai') && status === 'ready') {
-        media.innerHTML = `<img src="/api/jobs/${jobId}/images/${i}?t=${ts}" alt="">`;
+        media.innerHTML = `<img src="${userLineMediaUrl('images', jobId, i)}" alt="">`;
     } else if (status === 'failed') {
         media.innerHTML = '<span class="shorts-preview-empty">자산 생성 실패</span>';
     } else {
         media.innerHTML = '<span class="shorts-preview-empty">생성/업로드 대기</span>';
     }
+    media.dataset.mediaKey = mediaKey;
+}
+
+function getUserLineSlotState(i) {
+    const lines = window._splitLines || [];
+    const sources = window._userLineSources || [];
+    const statuses = window._userLineStatuses || [];
+    const jobId = window._draftJobId;
+    const source = sources[i] || 'ai';
+    const status = statuses[i] || 'pending';
+    const progress = getUserLineProgress(i);
+    const working = isUserLineWorking(i, status);
+    const activeAction = progress?.asset_action || null;
+    const version = getUserLineAssetVersion(i);
+    const slotKey = `${source}:${status}:${working ? activeAction : ''}:${version}:${progress?.asset_step || ''}:${progress?.asset_message || ''}`;
+    let slot = '';
+    if (source === 'clip' && status === 'ready') {
+        slot = `<video src="${userLineMediaUrl('clips', jobId, i)}" autoplay muted loop playsinline></video>`;
+    } else if ((source === 'image' || source === 'ai') && status === 'ready') {
+        slot = `<img src="${userLineMediaUrl('images', jobId, i)}" alt="">`;
+    } else if (working) {
+        slot = `
+            <div class="user-line-slot-progress">
+                <span class="user-line-spinner"></span>
+                <span>${escapeHtml(getUserLineActionLabel(activeAction))}</span>
+            </div>`;
+    } else if (status === 'pending') {
+        slot = `<span class="user-line-slot-empty">생성/업로드 대기</span>`;
+    } else {
+        slot = `
+            <div class="user-line-slot-failed">
+                <span>생성 실패</span>
+                <small>다시 시도하거나 직접 업로드해주세요</small>
+            </div>`;
+    }
+    const statusBadge = status === 'pending' && !working ? '<div class="user-line-slot-status">대기</div>' : '';
+    return { slot, statusBadge, slotKey, source, status, progress, working, activeAction, text: lines[i] || '' };
+}
+
+function getUserLineButtonsHtml(i, source, status, activeAction, working) {
+    const disabled = working ? 'disabled' : '';
+    const clipButton = (canGenerateUserLineClip(source, status) || activeAction === 'ai_clip')
+        ? `<button class="btn-secondary" onclick="userLineGenerateClip(${i})" ${disabled}>🎞 ${activeAction === 'ai_clip' ? getUserLineButtonLabel(activeAction) : 'AI 영상 변환'}</button>`
+        : '';
+    const aiButtonText = activeAction === 'ai_image' ? getUserLineButtonLabel(activeAction) : 'AI 이미지 생성';
+    const imageUploadText = activeAction === 'image_upload' ? getUserLineButtonLabel(activeAction) : '이미지 업로드';
+    const clipUploadText = activeAction === 'clip_upload' ? getUserLineButtonLabel(activeAction) : '영상 업로드';
+    return `
+        <button class="btn-secondary" onclick="userLineGenerateAI(${i})" ${disabled}>🪄 ${aiButtonText}</button>
+        ${clipButton}
+        <button class="btn-secondary" onclick="userLineUploadImage(${i})" ${disabled}>🖼 ${imageUploadText}</button>
+        <button class="btn-secondary" onclick="userLineUploadClip(${i})" ${disabled}>🎬 ${clipUploadText}</button>
+    `;
+}
+
+function updateUserLinesSummary() {
+    const lines = window._splitLines || [];
+    const statuses = window._userLineStatuses || [];
+    const summary = document.getElementById('user-lines-status');
+    if (summary) summary.textContent = `${statuses.filter(s => s === 'ready').length}/${lines.length}줄 준비됨`;
+}
+
+function updateRenderedUserLineCard(i) {
+    const card = document.querySelector(`.user-line-item[data-line-index="${i}"]`);
+    if (!card) return false;
+    const state = getUserLineSlotState(i);
+    const failed = state.status === 'failed';
+    const isEmpty = !state.text || !state.text.trim();
+
+    card.classList.toggle('failed', failed);
+    card.classList.toggle('is-empty', isEmpty);
+    card.classList.toggle('is-working', state.working);
+
+    const slotEl = card.querySelector('.user-line-slot');
+    if (slotEl && slotEl.dataset.slotKey !== state.slotKey) {
+        slotEl.innerHTML = state.slot + state.statusBadge;
+        slotEl.dataset.slotKey = state.slotKey;
+    }
+
+    const buttons = card.querySelector('.user-line-buttons');
+    if (buttons) {
+        buttons.innerHTML = getUserLineButtonsHtml(i, state.source, state.status, state.activeAction, state.working);
+    }
+
+    let failReason = card.querySelector('.fail-reason');
+    if (failed && !failReason) {
+        card.insertAdjacentHTML('beforeend', '<div class="fail-reason">실패: 다시 시도하거나 직접 업로드해주세요.</div>');
+    } else if (!failed && failReason) {
+        failReason.remove();
+    }
+    return true;
 }
 
 function renderUserLines(opts) {
     const force = !!(opts && opts.force);
+    const partialIndexes = Array.isArray(opts?.partialIndexes) ? opts.partialIndexes : null;
     // 사용자가 카드 입력란 안에서 타이핑 중이면 native undo 히스토리 보호를 위해 렌더를 미룸.
     // saveUserLineEdit finally가 다음 blur에 flush.
     const active = document.activeElement;
@@ -1684,6 +1808,18 @@ function renderUserLines(opts) {
     const statuses = window._userLineStatuses || [];
     const jobId = window._draftJobId;
 
+    if (partialIndexes && !force && container.children.length === lines.length) {
+        let ok = true;
+        partialIndexes.forEach(i => { ok = updateRenderedUserLineCard(i) && ok; });
+        if (ok) {
+            updateUserLinesSummary();
+            updateBatchGenerateButton();
+            setActiveUserLineIndex(window._activeUserLineIndex, { skipPreview: true });
+            renderUserLinePreview();
+            return;
+        }
+    }
+
     container.innerHTML = lines.map((text, i) => {
         const source = sources[i] || 'ai';
         const status = statuses[i] || 'pending';
@@ -1694,12 +1830,13 @@ function renderUserLines(opts) {
         const working = isUserLineWorking(i, status);
         const activeAction = progress?.asset_action || null;
         const disabled = working ? 'disabled' : '';
-        const ts = Date.now();  // 캐시 버스트
+        const version = getUserLineAssetVersion(i);
+        const slotKey = `${source}:${status}:${working ? activeAction : ''}:${version}:${progress?.asset_step || ''}:${progress?.asset_message || ''}`;
         let slot = '';
         if (source === 'clip' && status === 'ready') {
-            slot = `<video src="/api/jobs/${jobId}/clips/${i}?t=${ts}" autoplay muted loop playsinline></video>`;
+            slot = `<video src="${userLineMediaUrl('clips', jobId, i)}" autoplay muted loop playsinline></video>`;
         } else if ((source === 'image' || source === 'ai') && status === 'ready') {
-            slot = `<img src="/api/jobs/${jobId}/images/${i}?t=${ts}" alt="">`;
+            slot = `<img src="${userLineMediaUrl('images', jobId, i)}" alt="">`;
         } else if (working) {
             slot = `
                 <div class="user-line-slot-progress">
@@ -1741,7 +1878,7 @@ function renderUserLines(opts) {
                      oninput="handleUserLineInput(${i}, this)"
                      onblur="saveUserLineEdit(${i}, this)"
                      onkeydown="handleUserLineKey(event, ${i}, this)">${escapeHtml(text)}</div>
-                <div class="user-line-slot">${slot}${statusBadge}</div>
+                <div class="user-line-slot" data-slot-key="${escapeHtml(slotKey)}">${slot}${statusBadge}</div>
                 <div class="user-line-buttons">
                     <button class="btn-secondary" onclick="userLineGenerateAI(${i})" ${disabled}>🪄 ${aiButtonText}</button>
                     ${clipButton}
@@ -1754,12 +1891,10 @@ function renderUserLines(opts) {
     }).join('');
 
     // 상태 요약
-    const total = lines.length;
-    const ready = statuses.filter(s => s === 'ready').length;
-    const summary = document.getElementById('user-lines-status');
-    if (summary) summary.textContent = `${ready}/${total}줄 준비됨`;
+    updateUserLinesSummary();
     updateBatchGenerateButton();
-    setActiveUserLineIndex(window._activeUserLineIndex);
+    setActiveUserLineIndex(window._activeUserLineIndex, { skipPreview: true });
+    renderUserLinePreview();
 }
 
 // 분할 중복 가드 + 폴링 generation token (split 발생 시 +1)
@@ -2043,7 +2178,7 @@ async function userLineGenerateAI(i) {
     setUserLineProgress(i, 'ai_image', 'queued', 'AI 이미지 생성 대기 중');
     window._userLineStatuses[i] = 'pending';
     window._userLineSources[i] = 'ai';
-    renderUserLines();
+    renderUserLines({ partialIndexes: [i] });
     try {
         const resp = await authFetch(`/api/jobs/${window._draftJobId}/regenerate-image/${i}`, {
             method: 'POST',
@@ -2060,7 +2195,7 @@ async function userLineGenerateAI(i) {
         setUserLineBusy(i, false);
         clearUserLineProgress(i);
         window._userLineStatuses[i] = 'failed';
-        renderUserLines();
+        renderUserLines({ partialIndexes: [i] });
         showFriendlyError(e.message);
     }
 }
@@ -2079,7 +2214,7 @@ async function userLineGenerateClip(i) {
     setUserLineBusy(i, true);
     setUserLineProgress(i, 'ai_clip', 'queued', 'AI 영상 변환 대기 중');
     window._userLineStatuses[i] = 'pending';
-    renderUserLines();
+    renderUserLines({ partialIndexes: [i] });
 
     try {
         const resp = await authFetch(`/api/jobs/${window._draftJobId}/regenerate-clip/${i}`, {
@@ -2095,7 +2230,7 @@ async function userLineGenerateClip(i) {
         clearUserLineProgress(i);
         window._userLineStatuses[i] = 'failed';
         window._userLineSources[i] = originalSource;
-        renderUserLines();
+        renderUserLines({ partialIndexes: [i] });
         showFriendlyError(e.message);
     }
 }
@@ -2114,7 +2249,7 @@ function userLineUploadImage(i) {
         setUserLineBusy(i, true);
         setUserLineProgress(i, 'image_upload', 'saving', '이미지 업로드 중');
         window._userLineStatuses[i] = 'pending';
-        renderUserLines();
+        renderUserLines({ partialIndexes: [i] });
         try {
             const resp = await authFetch(`/api/jobs/${window._draftJobId}/upload-image/${i}`, {
                 method: 'POST',
@@ -2124,18 +2259,20 @@ function userLineUploadImage(i) {
                 const err = await resp.json();
                 throw new Error(err.detail || '이미지 업로드 실패');
             }
+            const data = await resp.json();
             window._userLineStatuses[i] = 'ready';
             window._userLineSources[i] = 'image';
+            setUserLineAssetVersion(i, data.asset_version);
             clearUserLineProgress(i);
-            renderUserLines();
+            renderUserLines({ partialIndexes: [i] });
         } catch (err) {
             window._userLineStatuses[i] = 'failed';
             clearUserLineProgress(i);
-            renderUserLines();
+            renderUserLines({ partialIndexes: [i] });
             alert('업로드 실패: ' + err.message);
         } finally {
             setUserLineBusy(i, false);
-            renderUserLines();
+            renderUserLines({ partialIndexes: [i] });
         }
     };
     input.click();
@@ -2155,7 +2292,7 @@ function userLineUploadClip(i) {
         setUserLineBusy(i, true);
         setUserLineProgress(i, 'clip_upload', 'saving', '영상 업로드 중');
         window._userLineStatuses[i] = 'pending';
-        renderUserLines();
+        renderUserLines({ partialIndexes: [i] });
         try {
             const resp = await authFetch(`/api/jobs/${window._draftJobId}/upload-clip/${i}`, {
                 method: 'POST',
@@ -2165,18 +2302,20 @@ function userLineUploadClip(i) {
                 const err = await resp.json();
                 throw new Error(err.detail || '영상 업로드 실패');
             }
+            const data = await resp.json();
             window._userLineStatuses[i] = 'ready';
             window._userLineSources[i] = 'clip';
+            setUserLineAssetVersion(i, data.asset_version);
             clearUserLineProgress(i);
-            renderUserLines();
+            renderUserLines({ partialIndexes: [i] });
         } catch (err) {
             window._userLineStatuses[i] = 'failed';
             clearUserLineProgress(i);
-            renderUserLines();
+            renderUserLines({ partialIndexes: [i] });
             alert('업로드 실패: ' + err.message);
         } finally {
             setUserLineBusy(i, false);
-            renderUserLines();
+            renderUserLines({ partialIndexes: [i] });
         }
     };
     input.click();
@@ -2198,7 +2337,7 @@ async function batchGenerateMissingImages() {
         window._userLineStatuses[i] = 'pending';
         window._userLineSources[i] = 'ai';
     });
-    renderUserLines();
+    renderUserLines({ partialIndexes: missing });
     try {
         const resp = await authFetch(`/api/jobs/${window._draftJobId}/generate-missing-images`, {
             method: 'POST',
@@ -2222,70 +2361,111 @@ async function batchGenerateMissingImages() {
             window._userLineStatuses[i] = 'pending';
             pollUserLineStatus(i, 'ai');
         });
-        renderUserLines();
+        renderUserLines({ partialIndexes: missing });
     } catch (e) {
         missing.forEach(i => {
             setUserLineBusy(i, false);
             clearUserLineProgress(i);
         });
         window._batchUserLineQueue = null;
-        renderUserLines();
+        renderUserLines({ partialIndexes: missing });
         showFriendlyError(e.message);
     }
 }
 
-async function pollUserLineStatus(i, targetSource, fallbackSource) {
-    // 서버의 줄별 status를 기준으로 완료/실패를 판단한다. 파일 라우트는 HEAD를 지원하지 않는다.
-    if (!window._draftJobId) return;
-    const jobId = window._draftJobId;
-    const expectedSource = targetSource || 'ai';
-    const startGen = window._splitGen || 0;  // 폴링 시작 시점의 분할 세대
-    const maxTries = 10800;  // 최대 6시간. 실패 판단은 서버 DB 상태만 신뢰한다.
-    for (let n = 0; n < maxTries; n++) {
-        await new Promise(r => setTimeout(r, 2000));
-        // 진행 중 다른 모드로 빠졌으면 중단
-        if (window._draftJobId !== jobId) return;
-        // 분할이 일어났다면 즉시 종료 (인덱스가 시프트되어 자신의 i가 더는 같은 카드가 아닐 수 있음)
-        if ((window._splitGen || 0) !== startGen) return;
-        try {
-            const r = await authFetch(`/api/jobs/${jobId}/preview`);
-            if (!r.ok) continue;
-            const preview = await r.json();
-            const line = preview.lines && preview.lines[i];
-            if (!line) continue;
-            if (line.status === 'failed') {
-                if ((window._splitGen || 0) !== startGen) return;  // race 마지막 가드
-                setUserLineBusy(i, false);
-                window._userLineStatuses[i] = 'failed';
-                window._userLineProgress[i] = normalizeUserLineProgress(line);
-                if (fallbackSource) window._userLineSources[i] = fallbackSource;
-                renderUserLines();
-                return;
-            }
-            if (line.status === 'pending') {
-                const progress = normalizeUserLineProgress(line);
-                if (progress) window._userLineProgress[i] = progress;
-                renderUserLines();
-                continue;
-            }
-            if (line.status !== 'ready') continue;
+function getUserLinePollState() {
+    if (!window._userLinePollState) {
+        window._userLinePollState = { jobId: null, timer: null, entries: new Map() };
+    }
+    return window._userLinePollState;
+}
 
-            if ((window._splitGen || 0) !== startGen) return;  // race 마지막 가드
+function scheduleUserLinePollTick(delayMs = 2000) {
+    const state = getUserLinePollState();
+    if (state.timer || state.entries.size === 0) return;
+    state.timer = setTimeout(runUserLinePollTick, delayMs);
+}
+
+function pollUserLineStatus(i, targetSource, fallbackSource) {
+    // 여러 줄 생성 중에도 /preview는 한 번만 가져와 전체 줄 상태를 반영한다.
+    if (!window._draftJobId) return;
+    const state = getUserLinePollState();
+    state.jobId = window._draftJobId;
+    state.entries.set(i, {
+        targetSource: targetSource || 'ai',
+        fallbackSource: fallbackSource || null,
+        startGen: window._splitGen || 0,
+        tries: 0,
+    });
+    scheduleUserLinePollTick();
+}
+
+async function runUserLinePollTick() {
+    const state = getUserLinePollState();
+    state.timer = null;
+    if (!state.jobId || state.entries.size === 0) return;
+    if (window._draftJobId !== state.jobId) {
+        state.entries.clear();
+        return;
+    }
+
+    const changed = new Set();
+    const maxTries = 10800;  // 최대 6시간. 실패 판단은 서버 DB 상태만 신뢰한다.
+    for (const [i, entry] of Array.from(state.entries.entries())) {
+        if ((window._splitGen || 0) !== entry.startGen || entry.tries >= maxTries) {
             setUserLineBusy(i, false);
-            window._userLineStatuses[i] = 'ready';
-            window._userLineSources[i] = expectedSource;
             clearUserLineProgress(i);
-            renderUserLines();
-            return;
-        } catch (e) { /* 폴링 실패는 무시 */ }
+            if (entry.fallbackSource) window._userLineSources[i] = entry.fallbackSource;
+            state.entries.delete(i);
+            changed.add(i);
+        }
     }
-    // 장시간 폴링 종료: 서버 작업은 계속될 수 있으므로 클라이언트에서 실패 처리하지 않는다.
-    if ((window._splitGen || 0) === startGen) {
-        setUserLineBusy(i, false);
-        clearUserLineProgress(i);
-        if (fallbackSource) window._userLineSources[i] = fallbackSource;
-        renderUserLines();
+
+    if (state.entries.size === 0) {
+        if (changed.size) renderUserLines({ partialIndexes: Array.from(changed) });
+        return;
     }
+
+    try {
+        const r = await authFetch(`/api/jobs/${state.jobId}/preview`);
+        if (r.ok) {
+            const preview = await r.json();
+            for (const [i, entry] of Array.from(state.entries.entries())) {
+                entry.tries += 1;
+                const line = preview.lines && preview.lines[i];
+                if (!line) continue;
+                setUserLineAssetVersion(i, line.asset_version);
+
+                if (line.status === 'failed') {
+                    setUserLineBusy(i, false);
+                    window._userLineStatuses[i] = 'failed';
+                    window._userLineProgress[i] = normalizeUserLineProgress(line);
+                    if (entry.fallbackSource) window._userLineSources[i] = entry.fallbackSource;
+                    state.entries.delete(i);
+                    changed.add(i);
+                    continue;
+                }
+
+                if (line.status === 'pending') {
+                    window._userLineProgress[i] = normalizeUserLineProgress(line);
+                    changed.add(i);
+                    continue;
+                }
+
+                if (line.status === 'ready') {
+                    setUserLineBusy(i, false);
+                    window._userLineStatuses[i] = 'ready';
+                    window._userLineSources[i] = entry.targetSource;
+                    clearUserLineProgress(i);
+                    state.entries.delete(i);
+                    changed.add(i);
+                }
+            }
+        }
+    } catch (e) { /* 폴링 실패는 무시 */ }
+
+    if (changed.size) renderUserLines({ partialIndexes: Array.from(changed) });
+    scheduleUserLinePollTick();
 }
 
 async function proceedToTtsFromUserLines() {

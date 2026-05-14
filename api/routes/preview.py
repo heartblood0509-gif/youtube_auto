@@ -101,7 +101,7 @@ def _job_asset_exists(job_id: str, relative_path: str) -> bool:
     return r2_file_exists(r2_key)
 
 
-def _set_line_source(job: Job, line_index: int, source: Literal["ai", "image", "clip"], *, status: str = "ready", fail_reason: Optional[str] = None) -> None:
+def _set_line_source(job: Job, line_index: int, source: Literal["ai", "image", "clip"], *, status: str = "ready", fail_reason: Optional[str] = None) -> Optional[int]:
     """줄별 자산 출처와 상태를 Job에 기록. 호출 측에서 db.commit() 필요."""
     sources = json.loads(job.line_sources_json or "[]")
     lines = json.loads(job.script_json or "[]")
@@ -115,7 +115,7 @@ def _set_line_source(job: Job, line_index: int, source: Literal["ai", "image", "
     if 0 <= line_index < n:
         sources[line_index] = source
         if status == "ready":
-            mark_line_asset_ready(lines[line_index])
+            mark_line_asset_ready(lines[line_index], bump_version=True)
         else:
             lines[line_index]["status"] = status
             lines[line_index]["fail_reason"] = fail_reason
@@ -123,6 +123,7 @@ def _set_line_source(job: Job, line_index: int, source: Literal["ai", "image", "
     job.line_sources_json = json.dumps(sources, ensure_ascii=False)
     job.script_json = json.dumps(lines, ensure_ascii=False)
     invalidate_visual_plan(job)
+    return lines[line_index].get("asset_version") if 0 <= line_index < n else None
 
 
 def _is_ai_owned_asset(job_dir: str, line_index: int, source: str) -> bool:
@@ -155,6 +156,7 @@ def _pending_ai_line(text: str) -> dict:
         "text": text,
         "image_prompt": "",
         "motion": "zoom_in",
+        "asset_version": 0,
         "status": "pending",
         "fail_reason": None,
     }
@@ -889,6 +891,13 @@ async def upload_image(
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     img.save(output_path, "PNG")
 
+    from core.r2_storage import upload_file as r2_upload, is_r2_enabled
+    if is_r2_enabled():
+        ok = await r2_upload(output_path, f"jobs/{job_id}/images/img_{line_index:02d}.png")
+        if not ok:
+            raise HTTPException(status_code=500, detail="R2 이미지 업로드 실패")
+
+    asset_version = None
     # 카드 B: 줄별 자산 출처/상태 갱신 + 이전 클립 파일 정리
     if job.generation_mode == "user_assets":
         prev_clip = os.path.join(settings.STORAGE_DIR, job_id, "clips", f"clip_raw_{line_index:02d}.mp4")
@@ -897,16 +906,14 @@ async def upload_image(
                 os.remove(prev_clip)
             except Exception:
                 pass
-        _set_line_source(job, line_index, "image", status="ready")
+        asset_version = _set_line_source(job, line_index, "image", status="ready")
         db.commit()
 
-    from core.r2_storage import upload_file as r2_upload, is_r2_enabled
-    if is_r2_enabled():
-        ok = await r2_upload(output_path, f"jobs/{job_id}/images/img_{line_index:02d}.png")
-        if not ok:
-            raise HTTPException(status_code=500, detail="R2 이미지 업로드 실패")
-
-    return {"message": f"이미지 {line_index + 1} 업로드 완료", "image_url": f"/api/jobs/{job_id}/images/{line_index}"}
+    return {
+        "message": f"이미지 {line_index + 1} 업로드 완료",
+        "image_url": f"/api/jobs/{job_id}/images/{line_index}",
+        "asset_version": asset_version,
+    }
 
 
 async def _render_video_task(job_id: str):
@@ -972,12 +979,12 @@ async def get_clip_file(
     job_dir = os.path.join(settings.STORAGE_DIR, job_id)
     clip_path = os.path.join(job_dir, "clips", f"clip_raw_{index:02d}.mp4")
 
-    if os.path.exists(clip_path):
-        return FileResponse(clip_path, media_type="video/mp4")
-
     r2_key = f"jobs/{job_id}/clips/clip_raw_{index:02d}.mp4"
     if is_r2_enabled() and r2_file_exists(r2_key):
         return StreamingResponse(stream_from_r2(r2_key), media_type="video/mp4")
+
+    if os.path.exists(clip_path):
+        return FileResponse(clip_path, media_type="video/mp4")
 
     raise HTTPException(status_code=404, detail="클립 파일 없음")
 
@@ -1138,6 +1145,14 @@ async def upload_clip(
             pass
         raise HTTPException(status_code=400, detail=f"영상이 너무 짧습니다 ({duration:.2f}초). 1초 이상 영상을 올려주세요.")
 
+    from core.r2_storage import upload_file as r2_upload, is_r2_enabled
+    clip_output = os.path.join(clips_dir, f"clip_raw_{line_index:02d}.mp4")
+    if is_r2_enabled() and os.path.exists(clip_output):
+        ok = await r2_upload(clip_output, f"jobs/{job_id}/clips/clip_raw_{line_index:02d}.mp4")
+        if not ok:
+            raise HTTPException(status_code=500, detail="R2 영상 업로드 실패")
+
+    asset_version = None
     # 카드 B: 줄별 자산 출처/상태 갱신 + 이전 이미지 파일 정리
     if job.generation_mode == "user_assets":
         prev_img = os.path.join(settings.STORAGE_DIR, job_id, "images", f"img_{line_index:02d}.png")
@@ -1146,17 +1161,14 @@ async def upload_clip(
                 os.remove(prev_img)
             except Exception:
                 pass
-        _set_line_source(job, line_index, "clip", status="ready")
+        asset_version = _set_line_source(job, line_index, "clip", status="ready")
         db.commit()
 
-    from core.r2_storage import upload_file as r2_upload, is_r2_enabled
-    clip_output = os.path.join(clips_dir, f"clip_raw_{line_index:02d}.mp4")
-    if is_r2_enabled() and os.path.exists(clip_output):
-        ok = await r2_upload(clip_output, f"jobs/{job_id}/clips/clip_raw_{line_index:02d}.mp4")
-        if not ok:
-            raise HTTPException(status_code=500, detail="R2 영상 업로드 실패")
-
-    return {"message": f"클립 {line_index + 1} 업로드 완료", "clip_url": f"/api/jobs/{job_id}/clips/{line_index}"}
+    return {
+        "message": f"클립 {line_index + 1} 업로드 완료",
+        "clip_url": f"/api/jobs/{job_id}/clips/{line_index}",
+        "asset_version": asset_version,
+    }
 
 
 async def _regenerate_single_clip(job_id: str, line_index: int):
