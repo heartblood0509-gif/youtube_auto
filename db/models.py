@@ -1,6 +1,6 @@
 """SQLAlchemy ORM 모델"""
 
-from sqlalchemy import Column, String, Float, Text, DateTime, Index, Boolean
+from sqlalchemy import Column, String, Float, Text, DateTime, Index, Boolean, Integer
 from sqlalchemy.orm import declarative_base
 import uuid
 from core.time_utils import utc_now_naive
@@ -95,3 +95,26 @@ class Job(Base):
     # 시간
     created_at = Column(DateTime, default=utc_now_naive)
     completed_at = Column(DateTime, nullable=True)
+
+
+class JobTask(Base):
+    __tablename__ = "job_tasks"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    job_id = Column(String, nullable=False, index=True)
+    user_id = Column(String, nullable=True, index=True)
+    kind = Column(String, nullable=False, index=True)
+    dedupe_key = Column(String, nullable=True, index=True)
+    status = Column(String, default="queued", index=True)
+    payload_json = Column(Text, default="{}")
+    attempt_count = Column(Integer, default=0)
+    max_attempts = Column(Integer, default=80)
+    next_run_at = Column(DateTime, nullable=True, index=True)
+    locked_by = Column(String, nullable=True, index=True)
+    locked_until = Column(DateTime, nullable=True, index=True)
+    heartbeat_at = Column(DateTime, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=utc_now_naive)
+    updated_at = Column(DateTime, default=utc_now_naive)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)

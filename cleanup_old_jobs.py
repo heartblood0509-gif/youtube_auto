@@ -7,9 +7,11 @@
 
 import sys
 import datetime
+import asyncio
 from db.database import init_db, SessionLocal
 from db.models import Job
 from core.time_utils import utc_now_naive
+from core.r2_storage import delete_job_files
 
 
 def main():
@@ -38,6 +40,7 @@ def main():
         print(f"{len(expired_jobs)}개 작업 만료 처리 중...")
 
         for job in expired_jobs:
+            asyncio.run(delete_job_files(job.id))
             job.files_expired_at = utc_now_naive()
             job.video_path = None
             print(f"  - {job.id} (완료: {job.completed_at})")

@@ -1578,7 +1578,7 @@ function updateBatchGenerateButton() {
     const queue = Array.isArray(window._batchUserLineQueue) ? window._batchUserLineQueue : [];
     if (queue.length === 0) {
         btn.disabled = false;
-        btn.textContent = '🪄 비어 있는 줄 일괄 AI 생성';
+        btn.textContent = '🪄 이미지 없는 줄 일괄 AI 생성';
         return;
     }
 
@@ -1587,12 +1587,12 @@ function updateBatchGenerateButton() {
     if (done >= queue.length) {
         window._batchUserLineQueue = null;
         btn.disabled = false;
-        btn.textContent = '🪄 비어 있는 줄 일괄 AI 생성';
+        btn.textContent = '🪄 이미지 없는 줄 일괄 AI 생성';
         return;
     }
 
     btn.disabled = true;
-    btn.textContent = `🪄 빈 줄 AI 생성 중... ${done}/${queue.length}`;
+    btn.textContent = `🪄 이미지 생성 중... ${done}/${queue.length}`;
 }
 
 function setActiveUserLineIndex(index, opts) {
@@ -2188,7 +2188,7 @@ async function batchGenerateMissingImages() {
     await flushActiveUserLineEdit();
     const missing = window._userLineSources.map((s, i) => (s === 'ai' && window._userLineStatuses[i] !== 'ready') ? i : -1).filter(i => i >= 0);
     if (missing.length === 0) {
-        alert('비어 있는 줄이 없습니다.');
+        alert('이미지가 없는 AI 줄이 없습니다.');
         return;
     }
     window._batchUserLineQueue = missing.slice();
@@ -2208,6 +2208,7 @@ async function batchGenerateMissingImages() {
             throw new Error(err.detail || '일괄 생성 실패');
         }
         const data = await resp.json();
+        window._batchUserLineTaskId = data.task_id || null;
         const queued = data.queued || [];
         const queuedSet = new Set(queued);
         window._batchUserLineQueue = queued;
@@ -2239,7 +2240,7 @@ async function pollUserLineStatus(i, targetSource, fallbackSource) {
     const jobId = window._draftJobId;
     const expectedSource = targetSource || 'ai';
     const startGen = window._splitGen || 0;  // 폴링 시작 시점의 분할 세대
-    const maxTries = expectedSource === 'clip' ? 180 : 90;  // clip은 fal.ai 대기 시간을 고려
+    const maxTries = 10800;  // 최대 6시간. 실패 판단은 서버 DB 상태만 신뢰한다.
     for (let n = 0; n < maxTries; n++) {
         await new Promise(r => setTimeout(r, 2000));
         // 진행 중 다른 모드로 빠졌으면 중단
@@ -2278,10 +2279,9 @@ async function pollUserLineStatus(i, targetSource, fallbackSource) {
             return;
         } catch (e) { /* 폴링 실패는 무시 */ }
     }
-    // 타임아웃: 한 줄 실패로 처리
+    // 장시간 폴링 종료: 서버 작업은 계속될 수 있으므로 클라이언트에서 실패 처리하지 않는다.
     if ((window._splitGen || 0) === startGen) {
         setUserLineBusy(i, false);
-        window._userLineStatuses[i] = 'failed';
         clearUserLineProgress(i);
         if (fallbackSource) window._userLineSources[i] = fallbackSource;
         renderUserLines();

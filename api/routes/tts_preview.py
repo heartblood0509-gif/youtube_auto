@@ -115,6 +115,8 @@ async def tts_preview(
 ):
     """선택한 엔진+음성+속도+감정으로 샘플 오디오 생성/반환"""
     keys = resolve_user_api_keys(db, _user.id)
+    if not keys["typecast"]:
+        raise HTTPException(400, "Typecast API 키가 설정되지 않았습니다. 설정 페이지에서 사용자 본인의 키를 입력하세요.")
 
     if not _SAFE_FILENAME.match(voice_id.replace("-", "_").replace(".", "_")):
         raise HTTPException(400, "잘못된 voice_id 형식입니다")
@@ -178,6 +180,8 @@ async def preview_build(
         raise HTTPException(400, "sentences가 비어있습니다")
 
     keys = resolve_user_api_keys(db, _user.id)
+    if not keys["typecast"]:
+        raise HTTPException(400, "Typecast API 키가 설정되지 않았습니다. 설정 페이지에서 사용자 본인의 키를 입력하세요.")
     session_id = uuid.uuid4().hex[:12]
     session_dir = os.path.join(TTS_SESSIONS_DIR, session_id)
     os.makedirs(session_dir, exist_ok=True)

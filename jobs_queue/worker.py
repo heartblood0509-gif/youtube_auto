@@ -3,13 +3,14 @@
 import json
 import os
 import glob
+import asyncio
 from typing import Any
 
 from db.database import SessionLocal
 from db.models import Job
 from jobs_queue.job_manager import update_job_progress, mark_job_failed, set_video_path
 from api.deps import resolve_user_api_keys
-from core.r2_storage import is_r2_enabled
+from core.r2_storage import is_r2_enabled, require_r2_for_generation
 from core.user_assets_visual import mark_line_asset_failed, mark_line_asset_ready, set_line_asset_progress
 from config import settings
 
@@ -24,6 +25,21 @@ def _update_r2_sync(job_id: str, status: str):
             db.commit()
     finally:
         db.close()
+
+
+async def _ensure_r2_asset_local(job_id: str, relative_path: str) -> bool:
+    """Ensure a generated job asset exists locally, downloading from R2 if needed."""
+    local_path = os.path.join(settings.STORAGE_DIR, job_id, relative_path)
+    if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+        return True
+    if not is_r2_enabled():
+        return False
+    from core.r2_storage import download_file_sync, r2_file_exists
+
+    r2_key = f"jobs/{job_id}/{relative_path.replace(os.sep, '/')}"
+    if not await asyncio.to_thread(r2_file_exists, r2_key):
+        return False
+    return await asyncio.to_thread(download_file_sync, r2_key, local_path)
 
 
 def _job_sources(job: Job, n: int) -> list[str]:
@@ -132,6 +148,7 @@ async def generate_images_for_job(job_id: str):
         if not job:
             return
 
+        require_r2_for_generation()
         update_job_progress(job_id, "generating_images", 0.0, "이미지 생성 준비 중...")
 
         lines = json.loads(job.script_json)
@@ -160,13 +177,15 @@ async def generate_images_for_job(job_id: str):
                 product_image=product_image,
             )
 
-            update_job_progress(job_id, "preview_ready", 0.4, "이미지 생성 완료 - 미리보기 확인")
-
             # R2 업로드
             from core.r2_storage import upload_job_files, is_r2_enabled
             if is_r2_enabled():
                 ok = await upload_job_files(job_id, "images")
-                _update_r2_sync(job_id, "partial" if ok else "none")
+                if not ok:
+                    raise RuntimeError("R2 이미지 업로드 실패")
+                _update_r2_sync(job_id, "partial")
+
+            update_job_progress(job_id, "preview_ready", 0.4, "이미지 생성 완료 - 미리보기 확인")
 
         except Exception as e:
             mark_job_failed(job_id, f"이미지 생성 실패: {str(e)}")
@@ -184,13 +203,18 @@ async def generate_clips_for_job(job_id: str):
         if not job:
             return
 
+        require_r2_for_generation()
         update_job_progress(job_id, "generating_clips", 0.25, "AI 영상 클립 생성 준비 중...")
 
         lines = json.loads(job.script_json)
         job_dir = os.path.join(settings.STORAGE_DIR, job_id)
         clips_dir = os.path.join(job_dir, "clips")
 
+        for i in range(len(lines)):
+            await _ensure_r2_asset_local(job_id, os.path.join("images", f"img_{i:02d}.png"))
         images = sorted(glob.glob(os.path.join(job_dir, "images", "img_*.png")))
+        if len(images) < len(lines):
+            raise RuntimeError("AI 클립 생성에 필요한 이미지 파일이 부족합니다")
 
         # video_mode에서 모델 키 결정 (hailuo / wan)
         model_key = getattr(job, "video_mode", "hailuo") or "hailuo"
@@ -206,11 +230,13 @@ async def generate_clips_for_job(job_id: str):
                 api_key=keys["fal"],
             )
 
-            update_job_progress(job_id, "clips_ready", 0.50, "AI 영상 클립 생성 완료 - 미리보기 확인")
-
             from core.r2_storage import upload_job_files, is_r2_enabled
             if is_r2_enabled():
-                await upload_job_files(job_id, "clips")
+                ok = await upload_job_files(job_id, "clips")
+                if not ok:
+                    raise RuntimeError("R2 영상 클립 업로드 실패")
+
+            update_job_progress(job_id, "clips_ready", 0.50, "AI 영상 클립 생성 완료 - 미리보기 확인")
 
         except Exception as e:
             mark_job_failed(job_id, f"AI 클립 생성 실패: {str(e)}")
@@ -228,6 +254,7 @@ async def regenerate_clip_for_job(job_id: str, line_index: int):
         if not job:
             return
 
+        require_r2_for_generation()
         is_user_assets = getattr(job, "generation_mode", "ai_full") == "user_assets"
         lines = json.loads(job.script_json or "[]")
         if line_index < 0 or line_index >= len(lines):
@@ -242,6 +269,7 @@ async def regenerate_clip_for_job(job_id: str, line_index: int):
         keys = resolve_user_api_keys(db, job.user_id)
 
         try:
+            await _ensure_r2_asset_local(job_id, os.path.join("images", f"img_{line_index:02d}.png"))
             if not os.path.exists(image_path):
                 raise RuntimeError("변환할 이미지 파일이 없습니다")
 
@@ -260,7 +288,9 @@ async def regenerate_clip_for_job(job_id: str, line_index: int):
 
             from core.r2_storage import upload_file as r2_upload, is_r2_enabled
             if is_r2_enabled():
-                await r2_upload(output_path, f"jobs/{job_id}/clips/clip_raw_{line_index:02d}.mp4")
+                ok = await r2_upload(output_path, f"jobs/{job_id}/clips/clip_raw_{line_index:02d}.mp4")
+                if not ok:
+                    raise RuntimeError("R2 영상 업로드 실패")
 
             if is_user_assets:
                 db.refresh(job)
@@ -303,6 +333,7 @@ async def render_video_for_job(job_id: str):
         if not job:
             return
 
+        require_r2_for_generation()
         update_job_progress(job_id, "generating_tts", 0.4, "TTS 나레이션 생성 중...")
 
         lines = json.loads(job.script_json)
@@ -319,9 +350,15 @@ async def render_video_for_job(job_id: str):
             asset_paths = []
             for i, src in enumerate(line_sources):
                 if src == "clip":
-                    asset_paths.append(os.path.join(job_dir, "clips", f"clip_raw_{i:02d}.mp4"))
+                    rel = os.path.join("clips", f"clip_raw_{i:02d}.mp4")
+                    if not await _ensure_r2_asset_local(job_id, rel):
+                        raise RuntimeError(f"{i + 1}번째 줄 영상 파일을 찾을 수 없습니다")
+                    asset_paths.append(os.path.join(job_dir, rel))
                 else:
-                    asset_paths.append(os.path.join(job_dir, "images", f"img_{i:02d}.png"))
+                    rel = os.path.join("images", f"img_{i:02d}.png")
+                    if not await _ensure_r2_asset_local(job_id, rel):
+                        raise RuntimeError(f"{i + 1}번째 줄 이미지 파일을 찾을 수 없습니다")
+                    asset_paths.append(os.path.join(job_dir, rel))
 
         # 이미지 파일 목록 (카드 A 호환 — Ken Burns 전 줄 경로)
         if line_sources is not None:
@@ -331,7 +368,11 @@ async def render_video_for_job(job_id: str):
                 for i in range(len(lines))
             ]
         else:
+            for i in range(len(lines)):
+                await _ensure_r2_asset_local(job_id, os.path.join("images", f"img_{i:02d}.png"))
             images = sorted(glob.glob(os.path.join(job_dir, "images", "img_*.png")))
+            if len(images) < len(lines):
+                raise RuntimeError("영상 조립에 필요한 이미지 파일이 부족합니다")
 
         # BGM 파일 결정: 로컬 → R2 다운로드 폴백
         bgm_path = None
@@ -357,7 +398,12 @@ async def render_video_for_job(job_id: str):
         # AI 클립이 있으면 경로 수집 (카드 A 전용)
         clips_dir = os.path.join(job_dir, "clips")
         if line_sources is None:
+            if (getattr(job, "video_mode", "kenburns") or "kenburns") != "kenburns":
+                for i in range(len(lines)):
+                    await _ensure_r2_asset_local(job_id, os.path.join("clips", f"clip_raw_{i:02d}.mp4"))
             ai_clips = sorted(glob.glob(os.path.join(clips_dir, "clip_raw_*.mp4")))
+            if (getattr(job, "video_mode", "kenburns") or "kenburns") != "kenburns" and len(ai_clips) < len(lines):
+                raise RuntimeError("영상 조립에 필요한 AI 클립 파일이 부족합니다")
         else:
             ai_clips = None  # 카드 B는 매니페스트로 처리
 
@@ -396,12 +442,17 @@ async def render_video_for_job(job_id: str):
                 config=config,
                 progress_callback=update_job_progress,
             )
-            set_video_path(job_id, video_path)
 
             from core.r2_storage import upload_job_files, is_r2_enabled
             if is_r2_enabled():
                 ok = await upload_job_files(job_id, "output")
-                _update_r2_sync(job_id, "synced" if ok else "partial")
+                if not ok:
+                    raise RuntimeError("R2 최종 영상 업로드 실패")
+                from core.r2_storage import delete_job_intermediate_files
+                await delete_job_intermediate_files(job_id)
+                _update_r2_sync(job_id, "synced")
+
+            set_video_path(job_id, video_path)
 
         except Exception as e:
             mark_job_failed(job_id, f"영상 조립 실패: {str(e)}")
@@ -429,6 +480,7 @@ async def regenerate_image_for_job(job_id: str, line_index: int, korean_request:
         if not job:
             return
 
+        require_r2_for_generation()
         is_user_assets = getattr(job, "generation_mode", "ai_full") == "user_assets"
 
         lines = json.loads(job.script_json)
@@ -554,7 +606,9 @@ async def regenerate_image_for_job(job_id: str, line_index: int, korean_request:
 
             from core.r2_storage import upload_file as r2_upload, is_r2_enabled
             if is_r2_enabled():
-                await r2_upload(output_path, f"jobs/{job_id}/images/img_{line_index:02d}.png")
+                ok = await r2_upload(output_path, f"jobs/{job_id}/images/img_{line_index:02d}.png")
+                if not ok:
+                    raise RuntimeError("R2 이미지 업로드 실패")
 
             if is_user_assets:
                 db.refresh(job)

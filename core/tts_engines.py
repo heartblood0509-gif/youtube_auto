@@ -103,9 +103,9 @@ async def generate_tts_typecast(tts_dir, sentences, voice_id=None, speed=None, e
     """
     from config import settings
 
-    key = api_key or settings.TYPECAST_API_KEY
+    key = api_key
     if not key:
-        raise RuntimeError("Typecast API 키가 설정되지 않았습니다")
+        raise RuntimeError("Typecast API 키가 설정되지 않았습니다. 설정 화면에서 사용자 본인의 Typecast API 키를 저장해주세요.")
 
     vid = voice_id or "tc_62e8f21e979b3860fe2f6a24"
     model = "ssfm-v21" if vid in V21_ONLY_VOICES else "ssfm-v30"

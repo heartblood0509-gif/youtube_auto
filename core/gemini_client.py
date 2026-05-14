@@ -118,9 +118,9 @@ PRODUCT_REFERENCE_PREFIX = (
 
 
 def get_client(api_key: str = None) -> genai.Client:
-    key = api_key or settings.GEMINI_API_KEY
+    key = api_key
     if not key:
-        raise RuntimeError("Gemini API 키가 설정되지 않았습니다. 환경변수 또는 api_key 파라미터를 확인해주세요.")
+        raise RuntimeError("Gemini API 키가 설정되지 않았습니다. 설정 화면에서 사용자 본인의 Gemini API 키를 저장해주세요.")
     return genai.Client(api_key=key)
 
 
@@ -1039,16 +1039,19 @@ async def generate_image(
 
     for attempt in range(max_retries + 1):
         try:
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model=settings.GEMINI_IMAGE_MODEL,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    response_modalities=["IMAGE"],
-                    image_config=types.ImageConfig(
-                        aspect_ratio="9:16",
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.models.generate_content,
+                    model=settings.GEMINI_IMAGE_MODEL,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["IMAGE"],
+                        image_config=types.ImageConfig(
+                            aspect_ratio="9:16",
+                        ),
                     ),
                 ),
+                timeout=240,
             )
 
             # 응답에서 이미지 데이터 추출
@@ -1075,7 +1078,12 @@ async def generate_image(
         except Exception as e:
             err_str = str(e)
             is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
-            is_server_error = "503" in err_str or "UNAVAILABLE" in err_str or "500" in err_str or "INTERNAL" in err_str
+            is_server_error = (
+                "503" in err_str or "UNAVAILABLE" in err_str
+                or "500" in err_str or "502" in err_str or "504" in err_str
+                or "INTERNAL" in err_str or "DEADLINE_EXCEEDED" in err_str
+                or "TimeoutError" in type(e).__name__ or "timed out" in err_str.lower()
+            )
             if (is_rate_limit or is_server_error) and attempt < max_retries:
                 if is_rate_limit:
                     wait = 30
