@@ -107,6 +107,17 @@ class ScriptLine(BaseModel):
     # 카드 B에서 사용: 줄별 자산 상태 ("pending" | "ready" | "failed")
     status: Literal["pending", "ready", "failed"] = "pending"
     fail_reason: Optional[str] = None
+    asset_action: Optional[Literal["ai_image", "ai_clip", "image_upload", "clip_upload"]] = None
+    asset_step: Optional[Literal[
+        "queued",
+        "planning",
+        "generating",
+        "qa",
+        "retrying",
+        "saving",
+        "converting",
+    ]] = None
+    asset_message: Optional[str] = None
 
 
 class ImagePromptResponse(BaseModel):

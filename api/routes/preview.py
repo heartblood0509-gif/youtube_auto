@@ -20,6 +20,18 @@ from db.database import get_db
 from db.models import Job, User
 from config import settings
 from PIL import Image, ImageOps
+from core.user_assets_visual import (
+    clear_line_asset_progress,
+    clear_line_visual_fields,
+    ensure_line_ids,
+    invalidate_visual_plan,
+    mark_line_asset_ready,
+    new_line_id,
+    parse_visual_plan,
+    set_line_asset_progress,
+    style_suffix,
+    visual_plan_script_hash,
+)
 import asyncio
 import json
 import os
@@ -74,6 +86,7 @@ def _set_line_source(job: Job, line_index: int, source: Literal["ai", "image", "
     """줄별 자산 출처와 상태를 Job에 기록. 호출 측에서 db.commit() 필요."""
     sources = json.loads(job.line_sources_json or "[]")
     lines = json.loads(job.script_json or "[]")
+    ensure_line_ids(lines)
     n = len(lines)
     # 길이 보정
     if len(sources) < n:
@@ -82,10 +95,50 @@ def _set_line_source(job: Job, line_index: int, source: Literal["ai", "image", "
         sources = sources[:n]
     if 0 <= line_index < n:
         sources[line_index] = source
-        lines[line_index]["status"] = status
-        lines[line_index]["fail_reason"] = fail_reason
+        if status == "ready":
+            mark_line_asset_ready(lines[line_index])
+        else:
+            lines[line_index]["status"] = status
+            lines[line_index]["fail_reason"] = fail_reason
+            clear_line_asset_progress(lines[line_index])
     job.line_sources_json = json.dumps(sources, ensure_ascii=False)
     job.script_json = json.dumps(lines, ensure_ascii=False)
+    invalidate_visual_plan(job)
+
+
+def _is_ai_owned_asset(job_dir: str, line_index: int, source: str) -> bool:
+    """True when the current asset should be invalidated by AI prompt/text changes."""
+    if source == "ai":
+        return True
+    if source == "clip":
+        # AI image->video conversion keeps the source image; direct user video upload removes it.
+        return os.path.exists(os.path.join(job_dir, "images", f"img_{line_index:02d}.png"))
+    return False
+
+
+async def _delete_line_assets_r2(job_id: str, line_index: int) -> None:
+    from core.r2_storage import delete_object as r2_delete, is_r2_enabled
+
+    if not is_r2_enabled():
+        return
+    await r2_delete(f"jobs/{job_id}/images/img_{line_index:02d}.png")
+    await r2_delete(f"jobs/{job_id}/clips/clip_raw_{line_index:02d}.mp4")
+
+
+async def _discard_line_assets(job_id: str, job_dir: str, line_index: int) -> None:
+    _delete_line_assets(job_dir, line_index)
+    await _delete_line_assets_r2(job_id, line_index)
+
+
+def _pending_ai_line(text: str) -> dict:
+    return {
+        "line_id": new_line_id(),
+        "text": text,
+        "image_prompt": "",
+        "motion": "zoom_in",
+        "status": "pending",
+        "fail_reason": None,
+    }
 
 
 # ─────────────────────────────────────
@@ -175,10 +228,11 @@ async def split_line(
     if job.status != "preview_ready":
         raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
     if _ai_in_flight_count(job_id) > 0:
-        raise HTTPException(status_code=409, detail="AI 이미지 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
+        raise HTTPException(status_code=409, detail="AI 자산 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
 
     lines = json.loads(job.script_json or "[]")
     sources = json.loads(job.line_sources_json or "[]")
+    ensure_line_ids(lines)
     n = len(lines)
     if len(sources) != n:
         raise HTTPException(status_code=400, detail="줄별 자산 정보가 올바르지 않습니다")
@@ -186,20 +240,21 @@ async def split_line(
         raise HTTPException(status_code=400, detail="잘못된 줄 인덱스")
 
     L = body.line_index
+    job_dir = os.path.join(settings.STORAGE_DIR, job_id)
     cur = lines[L]
+    source = sources[L]
+    ai_owned = _is_ai_owned_asset(job_dir, L, source)
     first = {**cur, "text": body.before}
-    second = {
-        "text": body.after,
-        "image_prompt": "",
-        "motion": "zoom_in",
-        "status": "pending",
-        "fail_reason": None,
-    }
+    if ai_owned:
+        clear_line_visual_fields(first, status="pending")
+        first_source = "ai"
+    else:
+        first_source = source
+    second = _pending_ai_line(body.after)
     new_lines = lines[:L] + [first, second] + lines[L + 1:]
-    new_sources = sources[:L] + [sources[L], "ai"] + sources[L + 1:]
+    new_sources = sources[:L] + [first_source, "ai"] + sources[L + 1:]
 
     # 자산 파일 시프트 — 역순으로 (높은 인덱스부터)
-    job_dir = os.path.join(settings.STORAGE_DIR, job_id)
     renames: list[tuple[str, str]] = []
     try:
         for i in range(n - 1, L, -1):
@@ -220,6 +275,9 @@ async def split_line(
             except Exception:
                 pass
         raise HTTPException(status_code=500, detail=f"자산 파일 시프트 실패: {e}")
+
+    if ai_owned:
+        await _discard_line_assets(job_id, job_dir, L)
 
     # R2 시프트 (활성화된 경우, best-effort)
     from core.r2_storage import copy_object as r2_copy, delete_object as r2_delete, is_r2_enabled
@@ -243,6 +301,7 @@ async def split_line(
 
     job.script_json = json.dumps(new_lines, ensure_ascii=False)
     job.line_sources_json = json.dumps(new_sources, ensure_ascii=False)
+    invalidate_visual_plan(job)
     db.commit()
 
     return SplitLineResponse(
@@ -266,9 +325,28 @@ async def edit_line(
         raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
 
     lines = json.loads(job.script_json or "[]")
+    ids_changed = ensure_line_ids(lines)
     if not (0 <= body.line_index < len(lines)):
         raise HTTPException(status_code=400, detail="잘못된 줄 인덱스")
+    old_text = lines[body.line_index].get("text") or ""
+    if old_text == body.text:
+        if ids_changed:
+            invalidate_visual_plan(job)
+        job.script_json = json.dumps(lines, ensure_ascii=False)
+        db.commit()
+        return {"ok": True}
+
     lines[body.line_index]["text"] = body.text
+    sources = json.loads(job.line_sources_json or "[]")
+    job_dir = os.path.join(settings.STORAGE_DIR, job_id)
+    source = sources[body.line_index] if body.line_index < len(sources) else "ai"
+    if _is_ai_owned_asset(job_dir, body.line_index, source):
+        await _discard_line_assets(job_id, job_dir, body.line_index)
+        clear_line_visual_fields(lines[body.line_index], status="pending")
+        if body.line_index < len(sources):
+            sources[body.line_index] = "ai"
+        job.line_sources_json = json.dumps(sources, ensure_ascii=False)
+    invalidate_visual_plan(job)
     job.script_json = json.dumps(lines, ensure_ascii=False)
     db.commit()
     return {"ok": True}
@@ -290,10 +368,11 @@ async def merge_line(
     if job.status != "preview_ready":
         raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
     if _ai_in_flight_count(job_id) > 0:
-        raise HTTPException(status_code=409, detail="AI 이미지 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
+        raise HTTPException(status_code=409, detail="AI 자산 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
 
     lines = json.loads(job.script_json or "[]")
     sources = json.loads(job.line_sources_json or "[]")
+    ensure_line_ids(lines)
     n = len(lines)
     if len(sources) != n:
         raise HTTPException(status_code=400, detail="줄별 자산 정보가 올바르지 않습니다")
@@ -305,7 +384,12 @@ async def merge_line(
     lines[L - 1]["text"] = (lines[L - 1].get("text") or "") + (lines[L].get("text") or "")
 
     job_dir = os.path.join(settings.STORAGE_DIR, job_id)
-    _delete_line_assets(job_dir, L)
+    prev_source = sources[L - 1]
+    if _is_ai_owned_asset(job_dir, L - 1, prev_source):
+        await _discard_line_assets(job_id, job_dir, L - 1)
+        clear_line_visual_fields(lines[L - 1], status="pending")
+        sources[L - 1] = "ai"
+    await _discard_line_assets(job_id, job_dir, L)
     renames: list[tuple[str, str]] = []
     try:
         renames = _shift_assets_down_in_place(job_dir, n, L)
@@ -326,6 +410,7 @@ async def merge_line(
     new_sources = sources[:L] + sources[L + 1:]
     job.script_json = json.dumps(new_lines, ensure_ascii=False)
     job.line_sources_json = json.dumps(new_sources, ensure_ascii=False)
+    invalidate_visual_plan(job)
     db.commit()
 
     return SplitLineResponse(
@@ -348,10 +433,11 @@ async def delete_line(
     if job.status != "preview_ready":
         raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
     if _ai_in_flight_count(job_id) > 0:
-        raise HTTPException(status_code=409, detail="AI 이미지 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
+        raise HTTPException(status_code=409, detail="AI 자산 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
 
     lines = json.loads(job.script_json or "[]")
     sources = json.loads(job.line_sources_json or "[]")
+    ensure_line_ids(lines)
     n = len(lines)
     if len(sources) != n:
         raise HTTPException(status_code=400, detail="줄별 자산 정보가 올바르지 않습니다")
@@ -376,6 +462,7 @@ async def delete_line(
     new_sources = sources[:L] + sources[L + 1:]
     job.script_json = json.dumps(new_lines, ensure_ascii=False)
     job.line_sources_json = json.dumps(new_sources, ensure_ascii=False)
+    invalidate_visual_plan(job)
     db.commit()
 
     return SplitLineResponse(
@@ -399,6 +486,57 @@ async def get_preview(
     image_urls = [f"/api/jobs/{job_id}/images/{i}" for i in range(len(lines))]
 
     return PreviewResponse(title=job.title, lines=lines, image_urls=image_urls)
+
+
+@router.get("/{job_id}/visual-plan")
+async def get_visual_plan_debug(
+    job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_approved_user),
+):
+    """카드 B 디버그: AI에 넘어간 visual plan/줄별 프롬프트/QA 결과 확인."""
+    job = get_user_job(db, job_id, _user)
+    if job.generation_mode != "user_assets":
+        raise HTTPException(status_code=400, detail="이 작업은 카드 B 모드가 아닙니다")
+
+    lines = json.loads(job.script_json or "[]")
+    sources = json.loads(job.line_sources_json or "[]")
+    plan = parse_visual_plan(getattr(job, "visual_plan_json", ""))
+    suffix = style_suffix(job.style)
+    current_hash = visual_plan_script_hash(lines)
+
+    debug_lines = []
+    for i, line in enumerate(lines):
+        prompt = line.get("image_prompt") or ""
+        final_prompt = f"{prompt}, {suffix}" if prompt and suffix else prompt
+        debug_lines.append({
+            "index": i + 1,
+            "line_id": line.get("line_id"),
+            "text": line.get("text") or "",
+            "source": sources[i] if i < len(sources) else "ai",
+            "status": line.get("status"),
+            "visual_anchor": line.get("visual_anchor"),
+            "visual_intent": line.get("visual_intent"),
+            "reference_line_index": line.get("reference_line_index"),
+            "image_prompt": prompt,
+            "final_image_prompt": final_prompt,
+            "motion": line.get("motion"),
+            "qa_status": line.get("qa_status"),
+            "qa_result": line.get("qa_result"),
+        })
+
+    return {
+        "job_id": job_id,
+        "plan_valid": bool(plan) and plan.get("script_hash") == current_hash,
+        "current_script_hash": current_hash,
+        "plan_script_hash": plan.get("script_hash"),
+        "inferred_topic": plan.get("inferred_topic"),
+        "narrative_summary": plan.get("narrative_summary"),
+        "visual_bible": plan.get("visual_bible"),
+        "continuity_anchors": plan.get("continuity_anchors"),
+        "plan_lines": plan.get("lines", []),
+        "lines": debug_lines,
+    }
 
 
 @router.post("/{job_id}/confirm")
@@ -434,6 +572,8 @@ async def confirm_and_render(
 
         job_dir = os.path.join(settings.STORAGE_DIR, job_id)
         for i, src in enumerate(sources):
+            if lines[i].get("status") != "ready":
+                raise HTTPException(status_code=400, detail=f"{i + 1}번째 줄의 자산이 아직 준비되지 않았습니다")
             if src == "clip":
                 p = os.path.join(job_dir, "clips", f"clip_raw_{i:02d}.mp4")
                 if not os.path.exists(p):
@@ -531,16 +671,18 @@ async def regenerate_image(
     job = get_user_job(db, job_id, _user)
 
     lines = json.loads(job.script_json)
+    ids_changed = ensure_line_ids(lines)
     if line_index < 0 or line_index >= len(lines):
         raise HTTPException(status_code=400, detail="잘못된 이미지 인덱스")
 
     if job.generation_mode != "user_assets":
+        if ids_changed:
+            job.script_json = json.dumps(lines, ensure_ascii=False)
         job.status = "regenerating_image"
         db.commit()
     else:
         # 줄별 상태만 'pending'으로 표시 (UI에 로딩 스피너 등)
-        lines[line_index]["status"] = "pending"
-        lines[line_index]["fail_reason"] = None
+        set_line_asset_progress(lines[line_index], "ai_image", "queued", "AI 이미지 생성 대기 중")
         job.script_json = json.dumps(lines, ensure_ascii=False)
         db.commit()
 
@@ -561,6 +703,7 @@ async def generate_missing_images(
         raise HTTPException(status_code=400, detail="이 작업은 카드 B 모드가 아닙니다")
 
     lines = json.loads(job.script_json or "[]")
+    ids_changed = ensure_line_ids(lines)
     sources = json.loads(job.line_sources_json or "[]")
     if len(sources) != len(lines):
         raise HTTPException(status_code=400, detail="줄별 자산 정보가 올바르지 않습니다")
@@ -577,14 +720,15 @@ async def generate_missing_images(
         if os.path.exists(img_path):
             continue
         queued.append(i)
-        lines[i]["status"] = "pending"
-        lines[i]["fail_reason"] = None
+        set_line_asset_progress(lines[i], "ai_image", "queued", "AI 이미지 생성 대기 중")
 
     job.script_json = json.dumps(lines, ensure_ascii=False)
+    if ids_changed:
+        invalidate_visual_plan(job)
     db.commit()
 
-    for i in queued:
-        background_tasks.add_task(_regenerate_single_image, job_id, i, None, None)
+    if queued:
+        background_tasks.add_task(_regenerate_missing_images_sequence, job_id, queued)
 
     return {"queued": queued}
 
@@ -743,6 +887,36 @@ async def regenerate_clip(
     if line_index < 0 or line_index >= len(lines):
         raise HTTPException(status_code=400, detail="잘못된 클립 인덱스")
 
+    if job.generation_mode == "user_assets":
+        if job.status != "preview_ready":
+            raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
+
+        sources = json.loads(job.line_sources_json or "[]")
+        if len(sources) != len(lines):
+            raise HTTPException(status_code=400, detail="줄별 자산 정보가 올바르지 않습니다")
+        if sources[line_index] not in ("ai", "image"):
+            raise HTTPException(status_code=400, detail="이미지가 준비된 줄만 AI 영상으로 변환할 수 있습니다")
+        if lines[line_index].get("status") != "ready":
+            raise HTTPException(status_code=400, detail="이미지가 준비된 줄만 AI 영상으로 변환할 수 있습니다")
+
+        job_dir = os.path.join(settings.STORAGE_DIR, job_id)
+        image_path = os.path.join(job_dir, "images", f"img_{line_index:02d}.png")
+        if not os.path.exists(image_path):
+            raise HTTPException(status_code=400, detail=f"{line_index + 1}번째 줄에 이미지가 없습니다")
+
+        clip_path = os.path.join(job_dir, "clips", f"clip_raw_{line_index:02d}.mp4")
+        if os.path.exists(clip_path):
+            try:
+                os.remove(clip_path)
+            except Exception:
+                pass
+        from core.r2_storage import delete_object as r2_delete
+        await r2_delete(f"jobs/{job_id}/clips/clip_raw_{line_index:02d}.mp4")
+
+        set_line_asset_progress(lines[line_index], "ai_clip", "queued", "AI 영상 변환 대기 중")
+        job.script_json = json.dumps(lines, ensure_ascii=False)
+        db.commit()
+
     background_tasks.add_task(_regenerate_single_clip, job_id, line_index)
     return {"message": f"클립 {line_index + 1} 재생성 시작"}
 
@@ -851,4 +1025,21 @@ async def _regenerate_single_clip(job_id: str, line_index: int):
     """백그라운드: 단일 AI 클립 재생성"""
     from jobs_queue.worker import regenerate_clip_for_job
 
-    await regenerate_clip_for_job(job_id, line_index)
+    await _mark_ai_started(job_id, line_index)
+    try:
+        await regenerate_clip_for_job(job_id, line_index)
+    finally:
+        await _mark_ai_finished(job_id, line_index)
+
+
+async def _regenerate_missing_images_sequence(job_id: str, line_indexes: list[int]):
+    """백그라운드: 카드 B 빈 AI 이미지 줄을 순서대로 생성."""
+    from jobs_queue.worker import regenerate_missing_images_for_job
+
+    for i in line_indexes:
+        await _mark_ai_started(job_id, i)
+    try:
+        await regenerate_missing_images_for_job(job_id, line_indexes)
+    finally:
+        for i in line_indexes:
+            await _mark_ai_finished(job_id, i)

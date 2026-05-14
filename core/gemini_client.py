@@ -49,6 +49,50 @@ class _PromoCommentNarration(BaseModel):
     lines: list[_PromoCommentLine] = Field(..., min_length=5, max_length=5)
 
 
+class _UserAssetsVisualBible(BaseModel):
+    main_subject: str | None = None
+    primary_settings: list[str] = Field(default_factory=list)
+    tone: str = ""
+    continuity_rules: list[str] = Field(default_factory=list)
+    avoid: list[str] = Field(default_factory=list)
+
+
+class _UserAssetsContinuityAnchor(BaseModel):
+    id: str
+    description: str
+
+
+class _UserAssetsPlanLine(BaseModel):
+    line_id: str
+    line_index: int
+    text: str
+    beat_role: str = ""
+    visual_intent: str = ""
+    continuity_anchor: str | None = None
+    image_prompt: str
+    motion: str = "zoom_in"
+
+
+class _UserAssetsVisualPlan(BaseModel):
+    version: int = 1
+    inferred_topic: str = ""
+    narrative_summary: str = ""
+    visual_bible: _UserAssetsVisualBible = Field(default_factory=_UserAssetsVisualBible)
+    continuity_anchors: list[_UserAssetsContinuityAnchor] = Field(default_factory=list)
+    lines: list[_UserAssetsPlanLine]
+
+
+class _UserAssetImageQa(BaseModel):
+    relevance_score: float = 0.0
+    continuity_score: float = 0.0
+    has_readable_text_or_logo: bool = False
+    issues: list[str] = Field(default_factory=list)
+    blocking_issues: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    should_retry: bool = False
+    retry_instruction: str = ""
+
+
 STYLE_SUFFIXES = {
     "realistic": "photorealistic, 8k, ultra-detailed, high resolution photography",
     "anime": "anime style, vibrant colors, Japanese animation, detailed illustration",
@@ -654,6 +698,315 @@ async def korean_to_nb2_prompt(korean_request: str, narration_text: str, api_key
         config=genai.types.GenerateContentConfig(temperature=0.7),
     )
     return response.text.strip().strip('"')
+
+
+# ──────────────────────────────────────────────
+# 카드 B: 전체 대본 기반 Visual Plan
+# ──────────────────────────────────────────────
+
+async def generate_user_assets_visual_plan(
+    lines: list[dict],
+    sources: list[str],
+    style: str,
+    api_key: str = None,
+) -> dict:
+    """카드 B 전용: 주제 없는 사용자 대본에서 visual bible + 줄별 shot plan 생성."""
+    from core.user_assets_visual import VISUAL_PLAN_VERSION
+
+    client = get_client(api_key)
+    nb2_guide = _load_nb2_guide()
+    style_desc = STYLE_SUFFIXES.get(style, style)
+
+    script_lines = []
+    for i, line in enumerate(lines):
+        script_lines.append({
+            "index": i + 1,
+            "line_id": line.get("line_id") or f"idx:{i}",
+            "text": line.get("text") or "",
+            "source": sources[i] if i < len(sources) else "ai",
+        })
+
+    prompt = f"""You are a visual director for a Korean YouTube Shorts editor.
+The user did NOT provide a separate topic and there is NO CTA line. Infer the topic only from the full script.
+
+Create a Card B visual plan for coherent AI image generation.
+
+Full script lines as JSON:
+{json.dumps(script_lines, ensure_ascii=False, indent=2)}
+
+Image style: {style_desc}
+
+Official Nano Banana 2 guide to apply:
+--- GUIDE ---
+{nb2_guide}
+--- END GUIDE ---
+
+Planning rules:
+- First infer the actual topic, thesis, emotional arc, and visual continuity from the full script.
+- Treat the last line as a normal narrative ending, NOT a CTA, NOT a product hero shot.
+- Use all lines as context, including lines whose source is image or clip, because they affect story continuity.
+- For each line, write a specific English image prompt that fits that exact line and the surrounding lines.
+- Avoid generic stock scenes. Make each shot carry the script's logic.
+- Maintain continuity using anchors such as same person, same workspace, same device setup, same mood, or a deliberate contrast.
+- If people appear, specify Korean.
+- If the script names a real product, app, platform, or brand, keep that context naturally when it is important to the scene.
+- Avoid captions, subtitles, watermarks, and readable screen text.
+- Each image prompt must be narrative, one clear scene, under 70 words.
+- Assign one motion from: {MOTION_TYPES}
+- Vary motion naturally; do not repeat one motion for every line.
+
+Output ONLY valid JSON in this exact shape:
+{{
+  "version": {VISUAL_PLAN_VERSION},
+  "inferred_topic": "one sentence in Korean",
+  "narrative_summary": "one concise Korean paragraph",
+  "visual_bible": {{
+    "main_subject": "stable subject or null",
+    "primary_settings": ["..."],
+    "tone": "...",
+    "continuity_rules": ["..."],
+    "avoid": ["..."]
+  }},
+  "continuity_anchors": [
+    {{"id": "anchor_short_id", "description": "what should remain visually consistent"}}
+  ],
+  "lines": [
+    {{
+      "line_id": "same line_id from input",
+      "line_index": 1,
+      "text": "same Korean text from input",
+      "beat_role": "hook|context|example|turn|contrast|explanation|ending",
+      "visual_intent": "what this shot must communicate",
+      "continuity_anchor": "anchor_short_id or null",
+      "image_prompt": "English Nano Banana 2 prompt",
+      "motion": "zoom_in"
+    }}
+  ]
+}}"""
+
+    last_err = None
+    result = None
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model=settings.GEMINI_TEXT_MODEL,
+                contents=prompt,
+                config=genai.types.GenerateContentConfig(
+                    temperature=0.35,
+                    response_mime_type="application/json",
+                    response_schema=_UserAssetsVisualPlan,
+                ),
+            )
+            parsed = getattr(response, "parsed", None)
+            if isinstance(parsed, _UserAssetsVisualPlan):
+                result = parsed.model_dump()
+            elif isinstance(parsed, dict):
+                result = parsed
+            else:
+                result = _parse_gemini_json(response.text or "")
+            break
+        except Exception as e:
+            last_err = e
+            logger.warning(
+                "[generate_user_assets_visual_plan] 시도 %d/3 실패: %s",
+                attempt + 1,
+                e,
+            )
+            if attempt < 2:
+                await asyncio.sleep(1.2 ** attempt)
+
+    if result is None:
+        raise ValueError(f"카드 B visual plan JSON 생성 실패: {last_err}")
+
+    if not isinstance(result, dict):
+        raise ValueError("카드 B visual plan 응답이 JSON 객체가 아닙니다")
+
+    plan_lines = result.get("lines")
+    if not isinstance(plan_lines, list) or not plan_lines:
+        raise ValueError("카드 B visual plan에 lines가 없습니다")
+
+    input_by_id = {str(line["line_id"]): line for line in script_lines}
+    normalized_lines = []
+    by_id = {
+        str(line.get("line_id")): line
+        for line in plan_lines
+        if isinstance(line, dict) and line.get("line_id")
+    }
+    for i, input_line in enumerate(script_lines):
+        line_id = str(input_line["line_id"])
+        item = by_id.get(line_id)
+        if not isinstance(item, dict):
+            raise ValueError(f"카드 B visual plan 누락 line_id={line_id}")
+        item["line_id"] = line_id
+        item["line_index"] = i + 1
+        item["text"] = input_by_id[line_id]["text"]
+        if item.get("motion") not in MOTION_TYPES:
+            item["motion"] = MOTION_TYPES[i % len(MOTION_TYPES)]
+        if not str(item.get("image_prompt") or "").strip():
+            raise ValueError(f"카드 B visual plan 프롬프트 누락 line_id={line_id}")
+        normalized_lines.append(item)
+
+    result["version"] = VISUAL_PLAN_VERSION
+    result["lines"] = normalized_lines
+    result.setdefault("visual_bible", {})
+    result.setdefault("continuity_anchors", [])
+    result.setdefault("inferred_topic", "")
+    result.setdefault("narrative_summary", "")
+    return result
+
+
+def _is_soft_text_or_logo_issue(issue: str) -> bool:
+    """Incidental laptop/device details should not hard-fail a usable image."""
+    s = (issue or "").lower()
+    soft_terms = (
+        "small logo",
+        "tiny logo",
+        "subtle logo",
+        "laptop lid",
+        "apple logo",
+        "brand logo",
+        "brand mark",
+        "keyboard",
+        "keyboard characters",
+        "keyboard letters",
+        "ui-like",
+        "blurred ui",
+        "incidental",
+    )
+    hard_terms = (
+        "watermark",
+        "caption",
+        "subtitle",
+        "large text",
+        "central text",
+        "readable sentence",
+        "readable paragraph",
+        "screen text",
+        "ui screenshot",
+        "title text",
+    )
+    if any(term in s for term in hard_terms):
+        return False
+    return any(term in s for term in soft_terms)
+
+
+async def evaluate_user_asset_image(
+    image_path: str,
+    plan: dict,
+    line_plan: dict,
+    final_prompt: str,
+    api_key: str = None,
+) -> dict:
+    """생성 이미지가 카드 B shot plan과 맞는지 vision QA. 실패 시 skipped를 반환."""
+    try:
+        from PIL import Image
+
+        client = get_client(api_key)
+        image = Image.open(image_path)
+        image.load()
+        qa_prompt = f"""You are a practical visual QA reviewer.
+Evaluate whether this generated vertical image matches the intended YouTube Shorts shot.
+
+Inferred topic: {plan.get("inferred_topic", "")}
+Narrative summary: {plan.get("narrative_summary", "")}
+Visual bible: {json.dumps(plan.get("visual_bible", {}), ensure_ascii=False)}
+Line text: {line_plan.get("text", "")}
+Visual intent: {line_plan.get("visual_intent", "")}
+Image prompt sent to the image model: {final_prompt}
+
+Check for:
+- Relevance to the line and overall inferred topic
+- Continuity with the visual bible
+- Blocking visual text problems: large captions, subtitles, watermarks, title text, readable screen text, or UI screenshots that draw attention
+- Non-blocking warnings: small laptop logos, tiny incidental brand marks, keyboard letters, or blurred UI-like details
+- Generic stock-photo feeling that fails to communicate the line
+
+Important policy:
+- Do NOT block an otherwise relevant image only because a small laptop logo, keyboard letters, or tiny incidental brand mark is visible.
+- Put those small incidental details in "warnings".
+- Put only serious text/watermark/UI problems or relevance/continuity failures in "blocking_issues".
+
+Output ONLY valid JSON:
+{{
+  "relevance_score": 0.0,
+  "continuity_score": 0.0,
+  "has_readable_text_or_logo": false,
+  "issues": ["short issue strings"],
+  "blocking_issues": ["serious issues that make the image unusable"],
+  "warnings": ["minor issues that should be improved but can be accepted"],
+  "should_retry": false,
+  "retry_instruction": "one concise English correction, or empty string"
+}}"""
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=settings.GEMINI_TEXT_MODEL,
+            contents=[qa_prompt, image],
+            config=genai.types.GenerateContentConfig(
+                temperature=0.2,
+                response_mime_type="application/json",
+                response_schema=_UserAssetImageQa,
+            ),
+        )
+        parsed = getattr(response, "parsed", None)
+        if isinstance(parsed, _UserAssetImageQa):
+            result = parsed.model_dump()
+        elif isinstance(parsed, dict):
+            result = parsed
+        else:
+            result = _parse_gemini_json(response.text or "")
+        relevance = float(result.get("relevance_score", 0.0) or 0.0)
+        continuity = float(result.get("continuity_score", 0.0) or 0.0)
+        has_text = bool(result.get("has_readable_text_or_logo"))
+        retry_instruction = str(result.get("retry_instruction") or "").strip()
+
+        issues = result.get("issues") if isinstance(result.get("issues"), list) else []
+        blocking_issues = result.get("blocking_issues") if isinstance(result.get("blocking_issues"), list) else []
+        warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+
+        if has_text and not blocking_issues and not warnings:
+            for issue in issues:
+                if _is_soft_text_or_logo_issue(str(issue)):
+                    warnings.append(str(issue))
+                else:
+                    blocking_issues.append(str(issue))
+
+        low_relevance = relevance < 0.62
+        low_continuity = continuity < 0.5
+        if low_relevance:
+            blocking_issues.append("Image is not relevant enough to the line or inferred topic")
+        if low_continuity:
+            blocking_issues.append("Image continuity is too weak for the visual plan")
+
+        blocking = bool(blocking_issues)
+        should_retry = blocking or bool(warnings) or bool(result.get("should_retry"))
+        if should_retry and not retry_instruction:
+            if blocking:
+                retry_instruction = "Regenerate the image with clearer relevance to the line, stronger visual continuity, and no large readable text, UI screenshots, or watermarks."
+            else:
+                retry_instruction = "Regenerate with an unbranded device, no visible logo, and a blank or softly blurred screen while keeping the same composition."
+        return {
+            "status": "checked",
+            "relevance_score": relevance,
+            "continuity_score": continuity,
+            "has_readable_text_or_logo": has_text,
+            "issues": issues,
+            "blocking": blocking,
+            "blocking_issues": blocking_issues,
+            "warnings": warnings,
+            "should_retry": should_retry,
+            "retry_instruction": retry_instruction,
+        }
+    except Exception as e:
+        logger.warning("[user_assets_image_qa] skipped: %s", e)
+        return {
+            "status": "skipped",
+            "blocking": False,
+            "should_retry": False,
+            "issues": [str(e)[:160]],
+            "blocking_issues": [],
+            "warnings": [str(e)[:160]],
+            "retry_instruction": "",
+        }
 
 
 # ──────────────────────────────────────────────

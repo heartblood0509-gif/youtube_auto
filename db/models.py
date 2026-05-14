@@ -74,6 +74,8 @@ class Job(Base):
     generation_mode = Column(String, default="ai_full")
     # 줄별 자산 출처: ["ai"|"image"|"clip", ...] (길이 == 줄 개수). 카드 B에서만 사용.
     line_sources_json = Column(Text, default="[]")
+    # 카드 B 전용: 전체 대본에서 추론한 visual bible + line_id 기반 shot plan.
+    visual_plan_json = Column(Text, default="")
     product_image_id = Column(String, nullable=True)
     bgm_volume = Column(Float, default=0.12)
     bgm_filename = Column(String, nullable=True)

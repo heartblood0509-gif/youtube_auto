@@ -66,6 +66,9 @@ window._userLineDirty = new Set();              // sync 필요한 줄 인덱스
 window._userLineSyncInFlight = new Map();       // 줄별 in-flight POST Promise (직렬화용)
 window._pendingUserLinesRender = false;         // 입력 중 미뤄둔 비-force 렌더
 window._activeUserLineIndex = 0;                 // 카드 B: 우측 프리뷰가 보여줄 줄 인덱스
+window._userLineBusy = new Set();                // 카드 B: AI 생성/업로드 진행 중인 줄
+window._userLineProgress = [];                   // 카드 B: 줄별 진행 표시 메타데이터
+window._batchUserLineQueue = null;               // 카드 B: 일괄 AI 이미지 생성 중인 줄 인덱스
 
 // ── 상태 관리 ──
 let titleOptions = null;
@@ -1469,6 +1472,8 @@ async function splitUserScript() {
         window._userLineStatuses = data.lines.map(() => 'pending');
         // 줄별 자산 출처 (클라 캐시) — 'ai'|'image'|'clip'
         window._userLineSources = data.lines.map(() => 'ai');
+        window._userLineProgress = data.lines.map(() => null);
+        window._batchUserLineQueue = null;
         window._activeUserLineIndex = 0;
 
         hideLoading();
@@ -1490,12 +1495,104 @@ function normalizeUserLinePreviewIndex(index) {
     return Math.max(0, Math.min(n, lines.length - 1));
 }
 
-function getUserLineSourceLabel(source, status) {
+function normalizeUserLineProgress(line) {
+    if (!line || typeof line !== 'object') return null;
+    const action = line.asset_action || null;
+    const step = line.asset_step || null;
+    const message = line.asset_message || null;
+    if (!action && !step && !message) return null;
+    return { asset_action: action, asset_step: step, asset_message: message };
+}
+
+function syncUserLineProgressFromLines(lines) {
+    window._userLineProgress = (lines || []).map(normalizeUserLineProgress);
+}
+
+function setUserLineProgress(i, action, step, message) {
+    if (!window._userLineProgress) window._userLineProgress = [];
+    window._userLineProgress[i] = { asset_action: action, asset_step: step, asset_message: message };
+}
+
+function clearUserLineProgress(i) {
+    if (!window._userLineProgress) window._userLineProgress = [];
+    window._userLineProgress[i] = null;
+}
+
+function getUserLineProgress(i) {
+    return (window._userLineProgress || [])[i] || null;
+}
+
+function getUserLineActionLabel(action) {
+    const labels = {
+        ai_image: '이미지 생성 중',
+        ai_clip: 'AI 영상 변환 중',
+        image_upload: '이미지 업로드 중',
+        clip_upload: '영상 업로드 중',
+    };
+    return labels[action] || '처리 중';
+}
+
+function getUserLineButtonLabel(action) {
+    const labels = {
+        ai_image: '생성 중...',
+        ai_clip: '변환 중...',
+        image_upload: '업로드 중...',
+        clip_upload: '업로드 중...',
+    };
+    return labels[action] || '처리 중...';
+}
+
+function isUserLineWorking(i, status) {
+    return status === 'pending' && !!(window._userLineBusy?.has(i) || getUserLineProgress(i));
+}
+
+function getUserLineSourceLabel(source, status, progress) {
+    if (status === 'pending' && progress) return getUserLineActionLabel(progress.asset_action);
     if (status === 'failed') return '실패';
     if (status === 'pending') return '대기';
     if (source === 'clip') return '영상';
     if (source === 'image') return '업로드 이미지';
     return 'AI 이미지';
+}
+
+function canGenerateUserLineClip(source, status) {
+    return status === 'ready' && (source === 'ai' || source === 'image');
+}
+
+function setUserLineBusy(i, busy) {
+    if (!window._userLineBusy) window._userLineBusy = new Set();
+    if (busy) window._userLineBusy.add(i);
+    else window._userLineBusy.delete(i);
+}
+
+function syncUserLineStateFromResponse(lines, sources) {
+    window._splitLines = (lines || []).map(l => l.text);
+    window._userLineSources = sources || [];
+    window._userLineStatuses = (lines || []).map(l => l.status);
+    syncUserLineProgressFromLines(lines || []);
+}
+
+function updateBatchGenerateButton() {
+    const btn = document.getElementById('btn-batch-generate-images');
+    if (!btn) return;
+    const queue = Array.isArray(window._batchUserLineQueue) ? window._batchUserLineQueue : [];
+    if (queue.length === 0) {
+        btn.disabled = false;
+        btn.textContent = '🪄 비어 있는 줄 일괄 AI 생성';
+        return;
+    }
+
+    const statuses = window._userLineStatuses || [];
+    const done = queue.filter(i => statuses[i] === 'ready' || statuses[i] === 'failed').length;
+    if (done >= queue.length) {
+        window._batchUserLineQueue = null;
+        btn.disabled = false;
+        btn.textContent = '🪄 비어 있는 줄 일괄 AI 생성';
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = `🪄 빈 줄 AI 생성 중... ${done}/${queue.length}`;
 }
 
 function setActiveUserLineIndex(index, opts) {
@@ -1537,15 +1634,25 @@ function renderUserLinePreview() {
     window._activeUserLineIndex = i;
     const source = sources[i] || 'ai';
     const status = statuses[i] || 'pending';
-    const label = getUserLineSourceLabel(source, status);
+    const progress = getUserLineProgress(i);
+    const working = isUserLineWorking(i, status);
+    const label = getUserLineSourceLabel(source, status, progress);
     const ts = Date.now();
 
     title.textContent = `${i + 1}번 줄`;
     sourcePill.textContent = label;
-    sourcePill.dataset.status = status;
-    caption.textContent = status === 'ready'
-        ? `${i + 1}번 줄의 ${label}가 프리뷰에 표시되고 있습니다.`
-        : `${i + 1}번 줄은 아직 자산이 준비되지 않았습니다.`;
+    sourcePill.dataset.status = working ? 'working' : status;
+    if (status === 'ready') {
+        caption.textContent = `${i + 1}번 줄의 ${label}가 프리뷰에 표시되고 있습니다.`;
+    } else if (working) {
+        caption.textContent = progress?.asset_message
+            ? `${i + 1}번 줄: ${progress.asset_message}`
+            : `${i + 1}번 줄의 ${label}입니다.`;
+    } else if (status === 'failed') {
+        caption.textContent = `${i + 1}번 줄 자산 생성에 실패했습니다. 다시 시도하거나 직접 업로드해주세요.`;
+    } else {
+        caption.textContent = `${i + 1}번 줄은 아직 자산이 준비되지 않았습니다.`;
+    }
 
     if (source === 'clip' && status === 'ready') {
         media.innerHTML = `<video src="/api/jobs/${jobId}/clips/${i}?t=${ts}" autoplay muted loop playsinline></video>`;
@@ -1582,21 +1689,43 @@ function renderUserLines(opts) {
         const status = statuses[i] || 'pending';
         const failed = status === 'failed';
         const isEmpty = !text || !text.trim();
+        const busy = window._userLineBusy && window._userLineBusy.has(i);
+        const progress = getUserLineProgress(i);
+        const working = isUserLineWorking(i, status);
+        const activeAction = progress?.asset_action || null;
+        const disabled = working ? 'disabled' : '';
         const ts = Date.now();  // 캐시 버스트
         let slot = '';
         if (source === 'clip' && status === 'ready') {
             slot = `<video src="/api/jobs/${jobId}/clips/${i}?t=${ts}" autoplay muted loop playsinline></video>`;
         } else if ((source === 'image' || source === 'ai') && status === 'ready') {
             slot = `<img src="/api/jobs/${jobId}/images/${i}?t=${ts}" alt="">`;
+        } else if (working) {
+            slot = `
+                <div class="user-line-slot-progress">
+                    <span class="user-line-spinner"></span>
+                    <span>${escapeHtml(getUserLineActionLabel(activeAction))}</span>
+                </div>`;
         } else if (status === 'pending') {
             slot = `<span class="user-line-slot-empty">생성/업로드 대기</span>`;
         } else {
-            slot = `<span class="user-line-slot-empty">실패</span>`;
+            slot = `
+                <div class="user-line-slot-failed">
+                    <span>생성 실패</span>
+                    <small>다시 시도하거나 직접 업로드해주세요</small>
+                </div>`;
         }
-        const statusBadge = status === 'pending' ? '<div class="user-line-slot-status">대기</div>' : '';
+        const statusBadge = status === 'pending' && !working ? '<div class="user-line-slot-status">대기</div>' : '';
+        const clipButton = (canGenerateUserLineClip(source, status) || activeAction === 'ai_clip')
+            ? `<button class="btn-secondary" onclick="userLineGenerateClip(${i})" ${disabled}>🎞 ${activeAction === 'ai_clip' ? getUserLineButtonLabel(activeAction) : 'AI 영상 변환'}</button>`
+            : '';
         const cardClasses = ['user-line-item'];
         if (failed) cardClasses.push('failed');
         if (isEmpty) cardClasses.push('is-empty');
+        if (working) cardClasses.push('is-working');
+        const aiButtonText = activeAction === 'ai_image' ? getUserLineButtonLabel(activeAction) : 'AI 이미지 생성';
+        const imageUploadText = activeAction === 'image_upload' ? getUserLineButtonLabel(activeAction) : '이미지 업로드';
+        const clipUploadText = activeAction === 'clip_upload' ? getUserLineButtonLabel(activeAction) : '영상 업로드';
         // × 버튼은 항상 렌더. 가시성은 CSS(.is-empty 부모일 때만 표시)로 제어.
         const deleteBtn = `<button class="user-line-delete" onclick="deleteUserLine(${i})" title="빈 카드 삭제" aria-label="빈 카드 삭제">×</button>`;
         return `
@@ -1614,9 +1743,10 @@ function renderUserLines(opts) {
                      onkeydown="handleUserLineKey(event, ${i}, this)">${escapeHtml(text)}</div>
                 <div class="user-line-slot">${slot}${statusBadge}</div>
                 <div class="user-line-buttons">
-                    <button class="btn-secondary" onclick="userLineGenerateAI(${i})">🪄 AI 이미지 생성</button>
-                    <button class="btn-secondary" onclick="userLineUploadImage(${i})">🖼 이미지 업로드</button>
-                    <button class="btn-secondary" onclick="userLineUploadClip(${i})">🎬 영상 업로드</button>
+                    <button class="btn-secondary" onclick="userLineGenerateAI(${i})" ${disabled}>🪄 ${aiButtonText}</button>
+                    ${clipButton}
+                    <button class="btn-secondary" onclick="userLineUploadImage(${i})" ${disabled}>🖼 ${imageUploadText}</button>
+                    <button class="btn-secondary" onclick="userLineUploadClip(${i})" ${disabled}>🎬 ${clipUploadText}</button>
                 </div>
                 ${failed ? `<div class="fail-reason">실패: 다시 시도하거나 직접 업로드해주세요.</div>` : ''}
             </div>
@@ -1628,6 +1758,7 @@ function renderUserLines(opts) {
     const ready = statuses.filter(s => s === 'ready').length;
     const summary = document.getElementById('user-lines-status');
     if (summary) summary.textContent = `${ready}/${total}줄 준비됨`;
+    updateBatchGenerateButton();
     setActiveUserLineIndex(window._activeUserLineIndex);
 }
 
@@ -1804,9 +1935,7 @@ async function mergeLineWithPrevious(i, el) {
             return;
         }
         const data = await resp.json();
-        window._splitLines = data.lines.map(l => l.text);
-        window._userLineSources = data.sources;
-        window._userLineStatuses = data.lines.map(l => l.status);
+        syncUserLineStateFromResponse(data.lines, data.sources);
         window._userLineDirty.clear();           // 서버 응답이 진실 — dirty 다 비움
         window._splitGen += 1;
         window._activeUserLineIndex = normalizeUserLinePreviewIndex(i - 1);
@@ -1842,9 +1971,7 @@ async function deleteUserLine(i) {
             return;
         }
         const data = await resp.json();
-        window._splitLines = data.lines.map(l => l.text);
-        window._userLineSources = data.sources;
-        window._userLineStatuses = data.lines.map(l => l.status);
+        syncUserLineStateFromResponse(data.lines, data.sources);
         window._userLineDirty.clear();
         window._splitGen += 1;
         // 윗 카드(i-1)로 포커스, 없으면(첫 카드 삭제) 새 첫 카드(0)로
@@ -1891,9 +2018,7 @@ async function splitUserLineAt(i, el) {
         }
         const data = await resp.json();
         // 서버 진실로 클라이언트 상태 전면 교체
-        window._splitLines = data.lines.map(l => l.text);
-        window._userLineSources = data.sources;
-        window._userLineStatuses = data.lines.map(l => l.status);
+        syncUserLineStateFromResponse(data.lines, data.sources);
         window._userLineDirty.clear();
         window._splitGen += 1;  // 진행 중 폴링 무효화
         window._activeUserLineIndex = normalizeUserLinePreviewIndex(i + 1);
@@ -1914,6 +2039,8 @@ async function userLineGenerateAI(i) {
     setActiveUserLineIndex(i);
     // 서버가 script_json의 최신 텍스트로 프롬프트를 생성하도록 입력 sync 먼저
     await flushActiveUserLineEdit();
+    setUserLineBusy(i, true);
+    setUserLineProgress(i, 'ai_image', 'queued', 'AI 이미지 생성 대기 중');
     window._userLineStatuses[i] = 'pending';
     window._userLineSources[i] = 'ai';
     renderUserLines();
@@ -1927,10 +2054,47 @@ async function userLineGenerateAI(i) {
             const err = await resp.json();
             throw new Error(err.detail || 'AI 이미지 생성 실패');
         }
-        // 서버 SSE 또는 폴링 대신, 간단히 polling으로 줄별 status 확인
-        pollUserLineStatus(i);
+        // 서버 줄별 status를 폴링해 완료/실패를 반영한다.
+        pollUserLineStatus(i, 'ai');
     } catch (e) {
+        setUserLineBusy(i, false);
+        clearUserLineProgress(i);
         window._userLineStatuses[i] = 'failed';
+        renderUserLines();
+        showFriendlyError(e.message);
+    }
+}
+
+async function userLineGenerateClip(i) {
+    if (!window._draftJobId) return;
+    const originalSource = (window._userLineSources || [])[i] || 'ai';
+    const status = (window._userLineStatuses || [])[i] || 'pending';
+    if (!canGenerateUserLineClip(originalSource, status)) {
+        alert('이미지가 준비된 줄만 AI 영상으로 변환할 수 있습니다.');
+        return;
+    }
+
+    setActiveUserLineIndex(i);
+    await flushActiveUserLineEdit();
+    setUserLineBusy(i, true);
+    setUserLineProgress(i, 'ai_clip', 'queued', 'AI 영상 변환 대기 중');
+    window._userLineStatuses[i] = 'pending';
+    renderUserLines();
+
+    try {
+        const resp = await authFetch(`/api/jobs/${window._draftJobId}/regenerate-clip/${i}`, {
+            method: 'POST',
+        });
+        if (!resp.ok) {
+            const err = await resp.json();
+            throw new Error(err.detail || 'AI 영상 변환 실패');
+        }
+        pollUserLineStatus(i, 'clip', originalSource);
+    } catch (e) {
+        setUserLineBusy(i, false);
+        clearUserLineProgress(i);
+        window._userLineStatuses[i] = 'failed';
+        window._userLineSources[i] = originalSource;
         renderUserLines();
         showFriendlyError(e.message);
     }
@@ -1947,6 +2111,8 @@ function userLineUploadImage(i) {
         if (!file) return;
         const formData = new FormData();
         formData.append('file', file);
+        setUserLineBusy(i, true);
+        setUserLineProgress(i, 'image_upload', 'saving', '이미지 업로드 중');
         window._userLineStatuses[i] = 'pending';
         renderUserLines();
         try {
@@ -1960,11 +2126,16 @@ function userLineUploadImage(i) {
             }
             window._userLineStatuses[i] = 'ready';
             window._userLineSources[i] = 'image';
+            clearUserLineProgress(i);
             renderUserLines();
         } catch (err) {
             window._userLineStatuses[i] = 'failed';
+            clearUserLineProgress(i);
             renderUserLines();
             alert('업로드 실패: ' + err.message);
+        } finally {
+            setUserLineBusy(i, false);
+            renderUserLines();
         }
     };
     input.click();
@@ -1981,6 +2152,8 @@ function userLineUploadClip(i) {
         if (!file) return;
         const formData = new FormData();
         formData.append('file', file);
+        setUserLineBusy(i, true);
+        setUserLineProgress(i, 'clip_upload', 'saving', '영상 업로드 중');
         window._userLineStatuses[i] = 'pending';
         renderUserLines();
         try {
@@ -1994,11 +2167,16 @@ function userLineUploadClip(i) {
             }
             window._userLineStatuses[i] = 'ready';
             window._userLineSources[i] = 'clip';
+            clearUserLineProgress(i);
             renderUserLines();
         } catch (err) {
             window._userLineStatuses[i] = 'failed';
+            clearUserLineProgress(i);
             renderUserLines();
             alert('업로드 실패: ' + err.message);
+        } finally {
+            setUserLineBusy(i, false);
+            renderUserLines();
         }
     };
     input.click();
@@ -2013,6 +2191,14 @@ async function batchGenerateMissingImages() {
         alert('비어 있는 줄이 없습니다.');
         return;
     }
+    window._batchUserLineQueue = missing.slice();
+    missing.forEach(i => {
+        setUserLineBusy(i, true);
+        setUserLineProgress(i, 'ai_image', 'queued', 'AI 이미지 생성 대기 중');
+        window._userLineStatuses[i] = 'pending';
+        window._userLineSources[i] = 'ai';
+    });
+    renderUserLines();
     try {
         const resp = await authFetch(`/api/jobs/${window._draftJobId}/generate-missing-images`, {
             method: 'POST',
@@ -2022,22 +2208,38 @@ async function batchGenerateMissingImages() {
             throw new Error(err.detail || '일괄 생성 실패');
         }
         const data = await resp.json();
-        (data.queued || []).forEach(i => {
+        const queued = data.queued || [];
+        const queuedSet = new Set(queued);
+        window._batchUserLineQueue = queued;
+        missing.filter(i => !queuedSet.has(i)).forEach(i => {
+            setUserLineBusy(i, false);
+            clearUserLineProgress(i);
+        });
+        queued.forEach(i => {
+            setUserLineBusy(i, true);
+            setUserLineProgress(i, 'ai_image', 'queued', 'AI 이미지 생성 대기 중');
             window._userLineStatuses[i] = 'pending';
-            pollUserLineStatus(i);
+            pollUserLineStatus(i, 'ai');
         });
         renderUserLines();
     } catch (e) {
+        missing.forEach(i => {
+            setUserLineBusy(i, false);
+            clearUserLineProgress(i);
+        });
+        window._batchUserLineQueue = null;
+        renderUserLines();
         showFriendlyError(e.message);
     }
 }
 
-async function pollUserLineStatus(i) {
-    // 이미지 파일 존재로 줄별 상태를 단순 폴링한다.
+async function pollUserLineStatus(i, targetSource, fallbackSource) {
+    // 서버의 줄별 status를 기준으로 완료/실패를 판단한다. 파일 라우트는 HEAD를 지원하지 않는다.
     if (!window._draftJobId) return;
     const jobId = window._draftJobId;
+    const expectedSource = targetSource || 'ai';
     const startGen = window._splitGen || 0;  // 폴링 시작 시점의 분할 세대
-    const maxTries = 60;  // ~120초
+    const maxTries = expectedSource === 'clip' ? 180 : 90;  // clip은 fal.ai 대기 시간을 고려
     for (let n = 0; n < maxTries; n++) {
         await new Promise(r => setTimeout(r, 2000));
         // 진행 중 다른 모드로 빠졌으면 중단
@@ -2045,23 +2247,43 @@ async function pollUserLineStatus(i) {
         // 분할이 일어났다면 즉시 종료 (인덱스가 시프트되어 자신의 i가 더는 같은 카드가 아닐 수 있음)
         if ((window._splitGen || 0) !== startGen) return;
         try {
-            const r = await authFetch(`/api/jobs/${jobId}`);
+            const r = await authFetch(`/api/jobs/${jobId}/preview`);
             if (!r.ok) continue;
-            const job = await r.json();
-            // 상태 자체보다는 이미지 URL HEAD로 확인
-            const head = await fetch(`/api/jobs/${jobId}/images/${i}?t=${Date.now()}`, { method: 'HEAD' });
-            if (head.ok) {
+            const preview = await r.json();
+            const line = preview.lines && preview.lines[i];
+            if (!line) continue;
+            if (line.status === 'failed') {
                 if ((window._splitGen || 0) !== startGen) return;  // race 마지막 가드
-                window._userLineStatuses[i] = 'ready';
-                window._userLineSources[i] = 'ai';
+                setUserLineBusy(i, false);
+                window._userLineStatuses[i] = 'failed';
+                window._userLineProgress[i] = normalizeUserLineProgress(line);
+                if (fallbackSource) window._userLineSources[i] = fallbackSource;
                 renderUserLines();
                 return;
             }
+            if (line.status === 'pending') {
+                const progress = normalizeUserLineProgress(line);
+                if (progress) window._userLineProgress[i] = progress;
+                renderUserLines();
+                continue;
+            }
+            if (line.status !== 'ready') continue;
+
+            if ((window._splitGen || 0) !== startGen) return;  // race 마지막 가드
+            setUserLineBusy(i, false);
+            window._userLineStatuses[i] = 'ready';
+            window._userLineSources[i] = expectedSource;
+            clearUserLineProgress(i);
+            renderUserLines();
+            return;
         } catch (e) { /* 폴링 실패는 무시 */ }
     }
     // 타임아웃: 한 줄 실패로 처리
     if ((window._splitGen || 0) === startGen) {
+        setUserLineBusy(i, false);
         window._userLineStatuses[i] = 'failed';
+        clearUserLineProgress(i);
+        if (fallbackSource) window._userLineSources[i] = fallbackSource;
         renderUserLines();
     }
 }
