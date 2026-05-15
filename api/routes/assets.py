@@ -14,6 +14,7 @@ from core.r2_storage import (
     is_r2_enabled, r2_file_exists, stream_from_r2,
     generate_presigned_url, upload_file as r2_upload, require_r2_for_generation,
 )
+from core.user_assets_visual import ensure_line_ids, line_asset_rel_candidates, r2_job_asset_key
 from core.time_utils import utc_now_naive
 from api.deps import get_approved_user, get_user_job
 from db.database import get_db
@@ -45,15 +46,22 @@ async def get_image(
     _user: User = Depends(get_approved_user),
 ):
     """생성된 이미지 파일 서빙"""
-    get_user_job(db, job_id, _user)
-    path = os.path.join(settings.STORAGE_DIR, job_id, "images", f"img_{idx:02d}.png")
+    job = get_user_job(db, job_id, _user)
+    job_dir = os.path.join(settings.STORAGE_DIR, job_id)
+    lines = json.loads(job.script_json or "[]")
+    ensure_line_ids(lines)
+    if not (0 <= idx < len(lines)):
+        _mark_expired_if_old(db, job_id)
+        raise HTTPException(status_code=404, detail="이미지를 찾을 수 없습니다")
 
-    r2_key = f"jobs/{job_id}/images/img_{idx:02d}.png"
-    if is_r2_enabled() and r2_file_exists(r2_key):
-        return StreamingResponse(stream_from_r2(r2_key), media_type="image/png")
+    for rel in line_asset_rel_candidates("image", lines[idx], idx):
+        r2_key = r2_job_asset_key(job_id, rel)
+        if is_r2_enabled() and r2_file_exists(r2_key):
+            return StreamingResponse(stream_from_r2(r2_key), media_type="image/png")
 
-    if os.path.exists(path):
-        return FileResponse(path, media_type="image/png")
+        path = os.path.join(job_dir, rel)
+        if os.path.exists(path):
+            return FileResponse(path, media_type="image/png")
 
     _mark_expired_if_old(db, job_id)
     raise HTTPException(status_code=404, detail="이미지를 찾을 수 없습니다")

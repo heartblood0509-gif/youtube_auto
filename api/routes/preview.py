@@ -17,8 +17,8 @@ from api.models import (
 )
 from api.deps import get_approved_user, get_user_job
 from db.database import get_db
-from db.models import Job, User
-from jobs_queue.task_queue import active_task_exists, enqueue_task, get_active_task, task_payload
+from db.models import Job, JobTask, User
+from jobs_queue.task_queue import ACTIVE_STATUSES, enqueue_task, get_active_task, task_payload
 from core.r2_storage import require_r2_for_generation, is_r2_enabled, r2_file_exists
 from config import settings
 from PIL import Image, ImageOps
@@ -27,9 +27,13 @@ from core.user_assets_visual import (
     clear_line_visual_fields,
     ensure_line_ids,
     invalidate_visual_plan,
+    legacy_line_asset_rel,
+    line_asset_rel,
+    line_asset_rel_candidates,
     mark_line_asset_ready,
     new_line_id,
     parse_visual_plan,
+    r2_job_asset_key,
     set_line_asset_progress,
     style_suffix,
     visual_plan_script_hash,
@@ -39,6 +43,7 @@ import json
 import os
 import io
 import logging
+import shutil
 import subprocess
 
 logger = logging.getLogger(__name__)
@@ -97,8 +102,52 @@ def _job_asset_exists(job_id: str, relative_path: str) -> bool:
         return True
     if not is_r2_enabled():
         return False
-    r2_key = f"jobs/{job_id}/{relative_path.replace(os.sep, '/')}"
-    return r2_file_exists(r2_key)
+    return r2_file_exists(r2_job_asset_key(job_id, relative_path))
+
+
+def _job_asset_exists_any(job_id: str, relative_paths: list[str]) -> bool:
+    return any(_job_asset_exists(job_id, rel) for rel in relative_paths)
+
+
+def _line_asset_local_exists(job_dir: str, kind: str, line: dict, line_index: int) -> bool:
+    return any(
+        os.path.exists(os.path.join(job_dir, rel))
+        for rel in line_asset_rel_candidates(kind, line, line_index)
+    )
+
+
+def _line_index_by_id(lines: list[dict], line_id: str) -> int | None:
+    for i, line in enumerate(lines):
+        if str(line.get("line_id")) == str(line_id):
+            return i
+    return None
+
+
+def _active_task_line_ids(db: Session, job_id: str, *, include_queued: bool = True) -> set[str]:
+    statuses = ACTIVE_STATUSES if include_queued else ("running", "retrying")
+    tasks = db.query(JobTask).filter(JobTask.job_id == job_id, JobTask.status.in_(statuses)).all()
+    line_ids: set[str] = set()
+    for task in tasks:
+        payload = task_payload(task)
+        if payload.get("current_line_id"):
+            line_ids.add(str(payload["current_line_id"]))
+        if task.kind == "card_b_missing_images":
+            completed = set(str(v) for v in (payload.get("completed_line_ids") or []))
+            for line_id in payload.get("line_ids") or []:
+                if str(line_id) not in completed:
+                    line_ids.add(str(line_id))
+        elif payload.get("line_id"):
+            line_ids.add(str(payload["line_id"]))
+    return line_ids
+
+
+def _raise_if_lines_have_active_tasks(db: Session, job_id: str, lines: list[dict], indexes: list[int], *, include_queued: bool = True) -> None:
+    active_ids = _active_task_line_ids(db, job_id, include_queued=include_queued)
+    if not active_ids:
+        return
+    for index in indexes:
+        if 0 <= index < len(lines) and str(lines[index].get("line_id")) in active_ids:
+            raise HTTPException(status_code=409, detail="AI 자산 생성이 진행 중인 줄입니다. 잠시 후 다시 시도하세요.")
 
 
 def _set_line_source(job: Job, line_index: int, source: Literal["ai", "image", "clip"], *, status: str = "ready", fail_reason: Optional[str] = None) -> Optional[int]:
@@ -126,28 +175,32 @@ def _set_line_source(job: Job, line_index: int, source: Literal["ai", "image", "
     return lines[line_index].get("asset_version") if 0 <= line_index < n else None
 
 
-def _is_ai_owned_asset(job_dir: str, line_index: int, source: str) -> bool:
+def _is_ai_owned_asset(job_dir: str, line: dict, line_index: int, source: str) -> bool:
     """True when the current asset should be invalidated by AI prompt/text changes."""
     if source == "ai":
         return True
     if source == "clip":
         # AI image->video conversion keeps the source image; direct user video upload removes it.
-        return os.path.exists(os.path.join(job_dir, "images", f"img_{line_index:02d}.png"))
+        return _line_asset_local_exists(job_dir, "image", line, line_index)
     return False
 
 
-async def _delete_line_assets_r2(job_id: str, line_index: int) -> None:
+async def _delete_line_assets_r2(job_id: str, line: dict, line_index: int) -> None:
     from core.r2_storage import delete_object as r2_delete, is_r2_enabled
 
     if not is_r2_enabled():
         return
-    await r2_delete(f"jobs/{job_id}/images/img_{line_index:02d}.png")
-    await r2_delete(f"jobs/{job_id}/clips/clip_raw_{line_index:02d}.mp4")
+    rels = (
+        line_asset_rel_candidates("image", line, line_index)
+        + line_asset_rel_candidates("clip", line, line_index)
+    )
+    for rel in dict.fromkeys(rels):
+        await r2_delete(r2_job_asset_key(job_id, rel))
 
 
-async def _discard_line_assets(job_id: str, job_dir: str, line_index: int) -> None:
-    _delete_line_assets(job_dir, line_index)
-    await _delete_line_assets_r2(job_id, line_index)
+async def _discard_line_assets(job_id: str, job_dir: str, line: dict, line_index: int) -> None:
+    _delete_line_assets(job_dir, line, line_index)
+    await _delete_line_assets_r2(job_id, line, line_index)
 
 
 def _pending_ai_line(text: str) -> dict:
@@ -162,35 +215,14 @@ def _pending_ai_line(text: str) -> dict:
     }
 
 
-# ─────────────────────────────────────
-# 카드 B: 자산 시프트 보조 (병합·삭제에서 공유)
-# ─────────────────────────────────────
-
-
-def _shift_assets_down_in_place(job_dir: str, n_old: int, removed_index: int) -> list[tuple[str, str]]:
-    """removed_index 이후 자산 파일들을 -1 인덱스로 시프트. 성공한 rename 쌍을 반환 (롤백용)."""
-    renames: list[tuple[str, str]] = []
-    for i in range(removed_index + 1, n_old):
-        for sub, fname_old, fname_new in (
-            ("images", f"img_{i:02d}.png", f"img_{i - 1:02d}.png"),
-            ("clips", f"clip_raw_{i:02d}.mp4", f"clip_raw_{i - 1:02d}.mp4"),
-        ):
-            src = os.path.join(job_dir, sub, fname_old)
-            if not os.path.exists(src):
-                continue
-            dst = os.path.join(job_dir, sub, fname_new)
-            os.rename(src, dst)
-            renames.append((src, dst))
-    return renames
-
-
-def _delete_line_assets(job_dir: str, line_index: int) -> None:
+def _delete_line_assets(job_dir: str, line: dict, line_index: int) -> None:
     """제거되는 줄의 자산 파일을 best-effort 삭제."""
-    for sub, fname in (
-        ("images", f"img_{line_index:02d}.png"),
-        ("clips", f"clip_raw_{line_index:02d}.mp4"),
-    ):
-        p = os.path.join(job_dir, sub, fname)
+    rels = (
+        line_asset_rel_candidates("image", line, line_index)
+        + line_asset_rel_candidates("clip", line, line_index)
+    )
+    for rel in dict.fromkeys(rels):
+        p = os.path.join(job_dir, rel)
         if os.path.exists(p):
             try:
                 os.remove(p)
@@ -198,41 +230,57 @@ def _delete_line_assets(job_dir: str, line_index: int) -> None:
                 pass
 
 
-async def _r2_shift_down(job_id: str, job_dir: str, n_old: int, removed_index: int) -> None:
-    """R2 활성 시: removed_index 객체 삭제 + 이후 인덱스 -1 시프트 (best-effort)."""
-    from core.r2_storage import copy_object as r2_copy, delete_object as r2_delete, is_r2_enabled
-    if not is_r2_enabled():
-        return
-    # 제거되는 줄의 R2 객체 삭제
-    for sub, fname in (
-        ("images", f"img_{removed_index:02d}.png"),
-        ("clips", f"clip_raw_{removed_index:02d}.mp4"),
-    ):
-        try:
-            await r2_delete(f"jobs/{job_id}/{sub}/{fname}")
-        except Exception:
-            pass
-    # 시프트: 로컬에서 이미 -1로 이동된 항목만 R2도 시프트
-    for i in range(removed_index + 1, n_old):
-        for sub, fname_old, fname_new in (
-            ("images", f"img_{i:02d}.png", f"img_{i - 1:02d}.png"),
-            ("clips", f"clip_raw_{i:02d}.mp4", f"clip_raw_{i - 1:02d}.mp4"),
-        ):
-            if not os.path.exists(os.path.join(job_dir, sub, fname_new)):
-                continue
-            src_key = f"jobs/{job_id}/{sub}/{fname_old}"
-            dst_key = f"jobs/{job_id}/{sub}/{fname_new}"
-            try:
-                ok = await r2_copy(src_key, dst_key)
-                if ok:
-                    await r2_delete(src_key)
-            except Exception as e:
-                logger.warning("[shift-down] R2 시프트 실패 job=%s key=%s: %s", job_id, src_key, e)
-
-
 # ─────────────────────────────────────
 # 카드 B: 카드 안에서 Enter로 줄 분할 + 텍스트 sync
 # ─────────────────────────────────────
+
+
+async def _promote_index_assets_to_line_ids(job_id: str, job_dir: str, lines: list[dict]) -> None:
+    """Copy legacy index assets to stable line_id paths before structural edits."""
+    from core.r2_storage import copy_object as r2_copy, is_r2_enabled, r2_file_exists
+
+    r2_enabled = is_r2_enabled()
+    for i, line in enumerate(lines):
+        for kind in ("image", "clip"):
+            stable_rel = line_asset_rel(kind, line, i)
+            legacy_rel = legacy_line_asset_rel(kind, i)
+            if stable_rel == legacy_rel:
+                continue
+
+            stable_path = os.path.join(job_dir, stable_rel)
+            legacy_path = os.path.join(job_dir, legacy_rel)
+            if not os.path.exists(stable_path) and os.path.exists(legacy_path):
+                os.makedirs(os.path.dirname(stable_path), exist_ok=True)
+                try:
+                    shutil.copy2(legacy_path, stable_path)
+                except Exception as e:
+                    logger.warning("[line-id-assets] local promote failed job=%s rel=%s: %s", job_id, legacy_rel, e)
+
+            if not r2_enabled:
+                continue
+            stable_key = r2_job_asset_key(job_id, stable_rel)
+            legacy_key = r2_job_asset_key(job_id, legacy_rel)
+            try:
+                if not r2_file_exists(stable_key) and r2_file_exists(legacy_key):
+                    await r2_copy(legacy_key, stable_key)
+            except Exception as e:
+                logger.warning("[line-id-assets] R2 promote failed job=%s key=%s: %s", job_id, legacy_key, e)
+
+
+async def _delete_line_asset_kind(job_id: str, job_dir: str, line: dict, line_index: int, kind: str) -> None:
+    from core.r2_storage import delete_object as r2_delete, is_r2_enabled
+
+    for rel in line_asset_rel_candidates(kind, line, line_index):
+        p = os.path.join(job_dir, rel)
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+    if not is_r2_enabled():
+        return
+    for rel in line_asset_rel_candidates(kind, line, line_index):
+        await r2_delete(r2_job_asset_key(job_id, rel))
 
 
 @router.post("/{job_id}/split-line", response_model=SplitLineResponse)
@@ -248,9 +296,6 @@ async def split_line(
         raise HTTPException(status_code=400, detail="이 작업은 카드 B 모드가 아닙니다")
     if job.status != "preview_ready":
         raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
-    if _ai_in_flight_count(job_id) > 0 or active_task_exists(db, job_id):
-        raise HTTPException(status_code=409, detail="AI 자산 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
-
     lines = json.loads(job.script_json or "[]")
     sources = json.loads(job.line_sources_json or "[]")
     ensure_line_ids(lines)
@@ -262,63 +307,34 @@ async def split_line(
 
     L = body.line_index
     job_dir = os.path.join(settings.STORAGE_DIR, job_id)
+    _raise_if_lines_have_active_tasks(db, job_id, lines, [L])
+    await _promote_index_assets_to_line_ids(job_id, job_dir, lines)
     cur = lines[L]
     source = sources[L]
-    ai_owned = _is_ai_owned_asset(job_dir, L, source)
-    first = {**cur, "text": body.before}
-    if ai_owned:
-        clear_line_visual_fields(first, status="pending")
-        first_source = "ai"
+    old_text = cur.get("text") or ""
+
+    # Pressing Enter at either edge only inserts an empty card. The existing
+    # line keeps its stable line_id and asset files, so ready media remains.
+    if body.before == old_text and body.after == "":
+        new_lines = lines[:L] + [cur, _pending_ai_line("")] + lines[L + 1:]
+        new_sources = sources[:L] + [source, "ai"] + sources[L + 1:]
+    elif body.before == "" and body.after == old_text:
+        new_lines = lines[:L] + [_pending_ai_line(""), cur] + lines[L + 1:]
+        new_sources = sources[:L] + ["ai", source] + sources[L + 1:]
     else:
-        first_source = source
-    second = _pending_ai_line(body.after)
-    new_lines = lines[:L] + [first, second] + lines[L + 1:]
-    new_sources = sources[:L] + [first_source, "ai"] + sources[L + 1:]
+        ai_owned = _is_ai_owned_asset(job_dir, cur, L, source)
+        first = {**cur, "text": body.before}
+        if ai_owned:
+            clear_line_visual_fields(first, status="pending")
+            first_source = "ai"
+        else:
+            first_source = source
+        second = _pending_ai_line(body.after)
+        new_lines = lines[:L] + [first, second] + lines[L + 1:]
+        new_sources = sources[:L] + [first_source, "ai"] + sources[L + 1:]
 
-    # 자산 파일 시프트 — 역순으로 (높은 인덱스부터)
-    renames: list[tuple[str, str]] = []
-    try:
-        for i in range(n - 1, L, -1):
-            for sub, fname_old, fname_new in (
-                ("images", f"img_{i:02d}.png", f"img_{i + 1:02d}.png"),
-                ("clips", f"clip_raw_{i:02d}.mp4", f"clip_raw_{i + 1:02d}.mp4"),
-            ):
-                src = os.path.join(job_dir, sub, fname_old)
-                if not os.path.exists(src):
-                    continue
-                dst = os.path.join(job_dir, sub, fname_new)
-                os.rename(src, dst)
-                renames.append((src, dst))
-    except OSError as e:
-        for src, dst in reversed(renames):
-            try:
-                os.rename(dst, src)
-            except Exception:
-                pass
-        raise HTTPException(status_code=500, detail=f"자산 파일 시프트 실패: {e}")
-
-    if ai_owned:
-        await _discard_line_assets(job_id, job_dir, L)
-
-    # R2 시프트 (활성화된 경우, best-effort)
-    from core.r2_storage import copy_object as r2_copy, delete_object as r2_delete, is_r2_enabled
-    if is_r2_enabled():
-        try:
-            for i in range(n - 1, L, -1):
-                for sub, fname_old, fname_new in (
-                    ("images", f"img_{i:02d}.png", f"img_{i + 1:02d}.png"),
-                    ("clips", f"clip_raw_{i:02d}.mp4", f"clip_raw_{i + 1:02d}.mp4"),
-                ):
-                    # 로컬에서 시프트된 항목만 R2도 시프트
-                    if not os.path.exists(os.path.join(job_dir, sub, fname_new)):
-                        continue
-                    src_key = f"jobs/{job_id}/{sub}/{fname_old}"
-                    dst_key = f"jobs/{job_id}/{sub}/{fname_new}"
-                    ok = await r2_copy(src_key, dst_key)
-                    if ok:
-                        await r2_delete(src_key)
-        except Exception as e:
-            logger.warning("[split-line] R2 시프트 일부 실패 job=%s: %s", job_id, e)
+        if ai_owned:
+            await _discard_line_assets(job_id, job_dir, cur, L)
 
     job.script_json = json.dumps(new_lines, ensure_ascii=False)
     job.line_sources_json = json.dumps(new_sources, ensure_ascii=False)
@@ -349,6 +365,7 @@ async def edit_line(
     ids_changed = ensure_line_ids(lines)
     if not (0 <= body.line_index < len(lines)):
         raise HTTPException(status_code=400, detail="잘못된 줄 인덱스")
+    _raise_if_lines_have_active_tasks(db, job_id, lines, [body.line_index])
     old_text = lines[body.line_index].get("text") or ""
     if old_text == body.text:
         if ids_changed:
@@ -361,8 +378,8 @@ async def edit_line(
     sources = json.loads(job.line_sources_json or "[]")
     job_dir = os.path.join(settings.STORAGE_DIR, job_id)
     source = sources[body.line_index] if body.line_index < len(sources) else "ai"
-    if _is_ai_owned_asset(job_dir, body.line_index, source):
-        await _discard_line_assets(job_id, job_dir, body.line_index)
+    if _is_ai_owned_asset(job_dir, lines[body.line_index], body.line_index, source):
+        await _discard_line_assets(job_id, job_dir, lines[body.line_index], body.line_index)
         clear_line_visual_fields(lines[body.line_index], status="pending")
         if body.line_index < len(sources):
             sources[body.line_index] = "ai"
@@ -388,9 +405,6 @@ async def merge_line(
         raise HTTPException(status_code=400, detail="이 작업은 카드 B 모드가 아닙니다")
     if job.status != "preview_ready":
         raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
-    if _ai_in_flight_count(job_id) > 0 or active_task_exists(db, job_id):
-        raise HTTPException(status_code=409, detail="AI 자산 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
-
     lines = json.loads(job.script_json or "[]")
     sources = json.loads(job.line_sources_json or "[]")
     ensure_line_ids(lines)
@@ -401,31 +415,36 @@ async def merge_line(
         raise HTTPException(status_code=400, detail="잘못된 줄 인덱스")
 
     L = body.line_index
+    if not (lines[L].get("text") or "").strip():
+        _raise_if_lines_have_active_tasks(db, job_id, lines, [L])
+        job_dir = os.path.join(settings.STORAGE_DIR, job_id)
+        await _promote_index_assets_to_line_ids(job_id, job_dir, lines)
+        await _discard_line_assets(job_id, job_dir, lines[L], L)
+
+        new_lines = lines[:L] + lines[L + 1:]
+        new_sources = sources[:L] + sources[L + 1:]
+        job.script_json = json.dumps(new_lines, ensure_ascii=False)
+        job.line_sources_json = json.dumps(new_sources, ensure_ascii=False)
+        invalidate_visual_plan(job)
+        db.commit()
+
+        return SplitLineResponse(
+            lines=[ScriptLine(**l) for l in new_lines],
+            sources=new_sources,
+        )
+
+    _raise_if_lines_have_active_tasks(db, job_id, lines, [L - 1, L])
+    job_dir = os.path.join(settings.STORAGE_DIR, job_id)
+    await _promote_index_assets_to_line_ids(job_id, job_dir, lines)
     # 텍스트 단순 연결 — 분할 때 보존된 공백을 그대로 복원
     lines[L - 1]["text"] = (lines[L - 1].get("text") or "") + (lines[L].get("text") or "")
 
-    job_dir = os.path.join(settings.STORAGE_DIR, job_id)
     prev_source = sources[L - 1]
-    if _is_ai_owned_asset(job_dir, L - 1, prev_source):
-        await _discard_line_assets(job_id, job_dir, L - 1)
+    if _is_ai_owned_asset(job_dir, lines[L - 1], L - 1, prev_source):
+        await _discard_line_assets(job_id, job_dir, lines[L - 1], L - 1)
         clear_line_visual_fields(lines[L - 1], status="pending")
         sources[L - 1] = "ai"
-    await _discard_line_assets(job_id, job_dir, L)
-    renames: list[tuple[str, str]] = []
-    try:
-        renames = _shift_assets_down_in_place(job_dir, n, L)
-    except OSError as e:
-        for src, dst in reversed(renames):
-            try:
-                os.rename(dst, src)
-            except Exception:
-                pass
-        raise HTTPException(status_code=500, detail=f"자산 파일 시프트 실패: {e}")
-
-    try:
-        await _r2_shift_down(job_id, job_dir, n, L)
-    except Exception as e:
-        logger.warning("[merge-line] R2 시프트 실패 job=%s: %s", job_id, e)
+    await _discard_line_assets(job_id, job_dir, lines[L], L)
 
     new_lines = lines[:L] + lines[L + 1:]
     new_sources = sources[:L] + sources[L + 1:]
@@ -453,9 +472,6 @@ async def delete_line(
         raise HTTPException(status_code=400, detail="이 작업은 카드 B 모드가 아닙니다")
     if job.status != "preview_ready":
         raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
-    if _ai_in_flight_count(job_id) > 0 or active_task_exists(db, job_id):
-        raise HTTPException(status_code=409, detail="AI 자산 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
-
     lines = json.loads(job.script_json or "[]")
     sources = json.loads(job.line_sources_json or "[]")
     ensure_line_ids(lines)
@@ -469,15 +485,10 @@ async def delete_line(
 
     L = body.line_index
     job_dir = os.path.join(settings.STORAGE_DIR, job_id)
-    _delete_line_assets(job_dir, L)
-    try:
-        _shift_assets_down_in_place(job_dir, n, L)
-    except OSError as e:
-        raise HTTPException(status_code=500, detail=f"자산 파일 시프트 실패: {e}")
-    try:
-        await _r2_shift_down(job_id, job_dir, n, L)
-    except Exception as e:
-        logger.warning("[delete-line] R2 시프트 실패 job=%s: %s", job_id, e)
+    _raise_if_lines_have_active_tasks(db, job_id, lines, [L])
+    await _promote_index_assets_to_line_ids(job_id, job_dir, lines)
+    _delete_line_assets(job_dir, lines[L], L)
+    await _delete_line_assets_r2(job_id, lines[L], L)
 
     new_lines = lines[:L] + lines[L + 1:]
     new_sources = sources[:L] + sources[L + 1:]
@@ -503,7 +514,12 @@ async def get_preview(
     if job.status not in ("preview_ready", "awaiting_confirmation", "regenerating_image"):
         raise HTTPException(status_code=400, detail=f"미리보기 불가 (상태: {job.status})")
 
-    lines = [ScriptLine(**l) for l in json.loads(job.script_json)]
+    raw_lines = json.loads(job.script_json)
+    ids_changed = ensure_line_ids(raw_lines)
+    if ids_changed:
+        job.script_json = json.dumps(raw_lines, ensure_ascii=False)
+        db.commit()
+    lines = [ScriptLine(**l) for l in raw_lines]
     image_urls = [f"/api/jobs/{job_id}/images/{i}" for i in range(len(lines))]
 
     return PreviewResponse(title=job.title, lines=lines, image_urls=image_urls)
@@ -588,20 +604,22 @@ async def confirm_and_render(
     # ─── 카드 B 분기: 자산 실재 검증 + 음성/BGM 설정 흡수 ───
     if job.generation_mode == "user_assets":
         lines = json.loads(job.script_json or "[]")
+        ids_changed = ensure_line_ids(lines)
         sources = json.loads(job.line_sources_json or "[]")
         if len(sources) != len(lines):
             raise HTTPException(status_code=400, detail="줄별 자산 정보가 올바르지 않습니다")
 
-        job_dir = os.path.join(settings.STORAGE_DIR, job_id)
         for i, src in enumerate(sources):
             if lines[i].get("status") != "ready":
                 raise HTTPException(status_code=400, detail=f"{i + 1}번째 줄의 자산이 아직 준비되지 않았습니다")
             if src == "clip":
-                if not _job_asset_exists(job_id, os.path.join("clips", f"clip_raw_{i:02d}.mp4")):
+                if not _job_asset_exists_any(job_id, line_asset_rel_candidates("clip", lines[i], i)):
                     raise HTTPException(status_code=400, detail=f"{i + 1}번째 줄에 영상이 없습니다")
             else:  # "ai" or "image"
-                if not _job_asset_exists(job_id, os.path.join("images", f"img_{i:02d}.png")):
+                if not _job_asset_exists_any(job_id, line_asset_rel_candidates("image", lines[i], i)):
                     raise HTTPException(status_code=400, detail=f"{i + 1}번째 줄에 이미지가 없습니다")
+        if ids_changed:
+            job.script_json = json.dumps(lines, ensure_ascii=False)
 
         # 음성/BGM 설정 흡수
         job.video_mode = "kenburns"  # 카드 B는 ai_clips 경로 미사용 (사용자 업로드 영상은 별도 분기)
@@ -735,8 +753,7 @@ async def regenerate_image(
     else:
         if job.status != "preview_ready":
             raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
-        if active_task_exists(db, job_id):
-            raise HTTPException(status_code=409, detail="AI 자산 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
+        _raise_if_lines_have_active_tasks(db, job_id, lines, [line_index])
         if not (lines[line_index].get("text") or "").strip():
             raise HTTPException(status_code=400, detail="빈 텍스트 줄은 이미지 생성할 수 없습니다")
         # 줄별 상태만 'pending'으로 표시 (UI에 로딩 스피너 등)
@@ -812,7 +829,7 @@ async def generate_missing_images(
             continue
         if not (lines[i].get("text") or "").strip():
             raise HTTPException(status_code=400, detail=f"{i + 1}번째 줄이 비어 있습니다")
-        has_asset = _job_asset_exists(job_id, os.path.join("images", f"img_{i:02d}.png"))
+        has_asset = _job_asset_exists_any(job_id, line_asset_rel_candidates("image", lines[i], i))
         if has_asset:
             if lines[i].get("status") != "ready":
                 mark_line_asset_ready(lines[i])
@@ -861,12 +878,13 @@ async def upload_image(
     """사용자 이미지 업로드 — AI 이미지 대체"""
     job = get_user_job(db, job_id, _user)
     _require_generation_storage()
-    if active_task_exists(db, job_id):
-        raise HTTPException(status_code=409, detail="AI 자산 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
-
     lines = json.loads(job.script_json)
+    ensure_line_ids(lines)
+    ensure_line_ids(lines)
     if line_index < 0 or line_index >= len(lines):
         raise HTTPException(status_code=400, detail="잘못된 이미지 인덱스")
+    if job.generation_mode == "user_assets":
+        _raise_if_lines_have_active_tasks(db, job_id, lines, [line_index])
 
     if file.content_type not in ("image/png", "image/jpeg", "image/webp"):
         raise HTTPException(status_code=400, detail="PNG, JPG, WebP 이미지만 업로드 가능합니다")
@@ -897,25 +915,23 @@ async def upload_image(
 
     img = img.resize((target_w, target_h), Image.LANCZOS)
 
-    output_path = os.path.join(settings.STORAGE_DIR, job_id, "images", f"img_{line_index:02d}.png")
+    line = lines[line_index]
+    image_rel = line_asset_rel("image", line, line_index)
+    output_path = os.path.join(settings.STORAGE_DIR, job_id, image_rel)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     img.save(output_path, "PNG")
 
     from core.r2_storage import upload_file as r2_upload, is_r2_enabled
     if is_r2_enabled():
-        ok = await r2_upload(output_path, f"jobs/{job_id}/images/img_{line_index:02d}.png")
+        ok = await r2_upload(output_path, r2_job_asset_key(job_id, image_rel))
         if not ok:
             raise HTTPException(status_code=500, detail="R2 이미지 업로드 실패")
 
     asset_version = None
     # 카드 B: 줄별 자산 출처/상태 갱신 + 이전 클립 파일 정리
     if job.generation_mode == "user_assets":
-        prev_clip = os.path.join(settings.STORAGE_DIR, job_id, "clips", f"clip_raw_{line_index:02d}.mp4")
-        if os.path.exists(prev_clip):
-            try:
-                os.remove(prev_clip)
-            except Exception:
-                pass
+        job_dir = os.path.join(settings.STORAGE_DIR, job_id)
+        await _delete_line_asset_kind(job_id, job_dir, line, line_index, "clip")
         asset_version = _set_line_source(job, line_index, "image", status="ready")
         db.commit()
 
@@ -967,7 +983,12 @@ async def get_clip_preview(
     if job.status not in ("clips_ready", "awaiting_confirmation"):
         raise HTTPException(status_code=400, detail=f"클립 미리보기 불가 (상태: {job.status})")
 
-    lines = [ScriptLine(**l) for l in json.loads(job.script_json)]
+    raw_lines = json.loads(job.script_json)
+    ids_changed = ensure_line_ids(raw_lines)
+    if ids_changed:
+        job.script_json = json.dumps(raw_lines, ensure_ascii=False)
+        db.commit()
+    lines = [ScriptLine(**l) for l in raw_lines]
     clip_urls = [f"/api/jobs/{job_id}/clips/{i}" for i in range(len(lines))]
     image_urls = [f"/api/jobs/{job_id}/images/{i}" for i in range(len(lines))]
 
@@ -985,16 +1006,21 @@ async def get_clip_file(
     from fastapi.responses import StreamingResponse
     from core.r2_storage import is_r2_enabled, r2_file_exists, stream_from_r2
 
-    get_user_job(db, job_id, _user)
+    job = get_user_job(db, job_id, _user)
     job_dir = os.path.join(settings.STORAGE_DIR, job_id)
-    clip_path = os.path.join(job_dir, "clips", f"clip_raw_{index:02d}.mp4")
+    lines = json.loads(job.script_json or "[]")
+    ensure_line_ids(lines)
+    if not (0 <= index < len(lines)):
+        raise HTTPException(status_code=404, detail="클립 파일 없음")
 
-    r2_key = f"jobs/{job_id}/clips/clip_raw_{index:02d}.mp4"
-    if is_r2_enabled() and r2_file_exists(r2_key):
-        return StreamingResponse(stream_from_r2(r2_key), media_type="video/mp4")
+    for rel in line_asset_rel_candidates("clip", lines[index], index):
+        r2_key = r2_job_asset_key(job_id, rel)
+        if is_r2_enabled() and r2_file_exists(r2_key):
+            return StreamingResponse(stream_from_r2(r2_key), media_type="video/mp4")
 
-    if os.path.exists(clip_path):
-        return FileResponse(clip_path, media_type="video/mp4")
+        clip_path = os.path.join(job_dir, rel)
+        if os.path.exists(clip_path):
+            return FileResponse(clip_path, media_type="video/mp4")
 
     raise HTTPException(status_code=404, detail="클립 파일 없음")
 
@@ -1018,8 +1044,7 @@ async def regenerate_clip(
     if job.generation_mode == "user_assets":
         if job.status != "preview_ready":
             raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
-        if active_task_exists(db, job_id):
-            raise HTTPException(status_code=409, detail="AI 자산 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
+        _raise_if_lines_have_active_tasks(db, job_id, lines, [line_index])
 
         sources = json.loads(job.line_sources_json or "[]")
         if len(sources) != len(lines):
@@ -1030,18 +1055,10 @@ async def regenerate_clip(
             raise HTTPException(status_code=400, detail="이미지가 준비된 줄만 AI 영상으로 변환할 수 있습니다")
 
         job_dir = os.path.join(settings.STORAGE_DIR, job_id)
-        image_path = os.path.join(job_dir, "images", f"img_{line_index:02d}.png")
-        if not _job_asset_exists(job_id, os.path.join("images", f"img_{line_index:02d}.png")):
+        if not _job_asset_exists_any(job_id, line_asset_rel_candidates("image", lines[line_index], line_index)):
             raise HTTPException(status_code=400, detail=f"{line_index + 1}번째 줄에 이미지가 없습니다")
 
-        clip_path = os.path.join(job_dir, "clips", f"clip_raw_{line_index:02d}.mp4")
-        if os.path.exists(clip_path):
-            try:
-                os.remove(clip_path)
-            except Exception:
-                pass
-        from core.r2_storage import delete_object as r2_delete
-        await r2_delete(f"jobs/{job_id}/clips/clip_raw_{line_index:02d}.mp4")
+        await _delete_line_asset_kind(job_id, job_dir, lines[line_index], line_index, "clip")
 
         set_line_asset_progress(lines[line_index], "ai_clip", "queued", "AI 영상 변환 대기 중")
         job.script_json = json.dumps(lines, ensure_ascii=False)
@@ -1102,12 +1119,13 @@ async def upload_clip(
     """사용자 영상 업로드 — AI 클립 대체"""
     job = get_user_job(db, job_id, _user)
     _require_generation_storage()
-    if active_task_exists(db, job_id):
-        raise HTTPException(status_code=409, detail="AI 자산 생성이 진행 중입니다. 잠시 후 다시 시도하세요")
 
     lines = json.loads(job.script_json)
+    ensure_line_ids(lines)
     if line_index < 0 or line_index >= len(lines):
         raise HTTPException(status_code=400, detail="잘못된 클립 인덱스")
+    if job.generation_mode == "user_assets":
+        _raise_if_lines_have_active_tasks(db, job_id, lines, [line_index])
 
     allowed_types = ("video/mp4", "video/quicktime", "video/webm", "video/x-msvideo")
     if file.content_type not in allowed_types:
@@ -1119,7 +1137,9 @@ async def upload_clip(
 
     clips_dir = os.path.join(settings.STORAGE_DIR, job_id, "clips")
     os.makedirs(clips_dir, exist_ok=True)
-    output_path = os.path.join(clips_dir, f"clip_raw_{line_index:02d}.mp4")
+    line = lines[line_index]
+    clip_rel = line_asset_rel("clip", line, line_index)
+    output_path = os.path.join(settings.STORAGE_DIR, job_id, clip_rel)
 
     if file.content_type == "video/mp4":
         # MP4는 그대로 저장
@@ -1156,21 +1176,17 @@ async def upload_clip(
         raise HTTPException(status_code=400, detail=f"영상이 너무 짧습니다 ({duration:.2f}초). 1초 이상 영상을 올려주세요.")
 
     from core.r2_storage import upload_file as r2_upload, is_r2_enabled
-    clip_output = os.path.join(clips_dir, f"clip_raw_{line_index:02d}.mp4")
+    clip_output = output_path
     if is_r2_enabled() and os.path.exists(clip_output):
-        ok = await r2_upload(clip_output, f"jobs/{job_id}/clips/clip_raw_{line_index:02d}.mp4")
+        ok = await r2_upload(clip_output, r2_job_asset_key(job_id, clip_rel))
         if not ok:
             raise HTTPException(status_code=500, detail="R2 영상 업로드 실패")
 
     asset_version = None
     # 카드 B: 줄별 자산 출처/상태 갱신 + 이전 이미지 파일 정리
     if job.generation_mode == "user_assets":
-        prev_img = os.path.join(settings.STORAGE_DIR, job_id, "images", f"img_{line_index:02d}.png")
-        if os.path.exists(prev_img):
-            try:
-                os.remove(prev_img)
-            except Exception:
-                pass
+        job_dir = os.path.join(settings.STORAGE_DIR, job_id)
+        await _delete_line_asset_kind(job_id, job_dir, line, line_index, "image")
         asset_version = _set_line_source(job, line_index, "clip", status="ready")
         db.commit()
 

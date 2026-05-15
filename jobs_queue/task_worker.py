@@ -129,16 +129,18 @@ async def _run_render_video(db, task: JobTask) -> None:
 
 async def _run_card_b_single_image(db, task: JobTask) -> None:
     payload = task_payload(task)
+    line_id = str(payload.get("line_id") or "")
     line_index = _resolve_line_index(db, task.job_id, payload)
     _set_task_current_line(db, task, payload, line_index)
-    await _generate_card_b_line_image(task.job_id, line_index)
-    _raise_if_line_failed(db, task.job_id, line_index)
+    await _generate_card_b_line_image(task.job_id, line_index, line_id=line_id)
+    _raise_if_line_failed(db, task.job_id, line_index, line_id=line_id)
 
 
 async def _run_regenerate_image(db, task: JobTask) -> None:
     from jobs_queue.worker import regenerate_image_for_job
 
     payload = task_payload(task)
+    line_id = str(payload.get("line_id") or "")
     line_index = _resolve_line_index(db, task.job_id, payload)
     _set_task_current_line(db, task, payload, line_index)
     await regenerate_image_for_job(
@@ -146,10 +148,11 @@ async def _run_regenerate_image(db, task: JobTask) -> None:
         line_index,
         payload.get("korean_request"),
         payload.get("english_prompt"),
+        line_id=line_id,
     )
     job = db.query(Job).filter(Job.id == task.job_id).first()
     if job and getattr(job, "generation_mode", "ai_full") == "user_assets":
-        _raise_if_line_failed(db, task.job_id, line_index)
+        _raise_if_line_failed(db, task.job_id, line_index, line_id=line_id)
     else:
         _raise_if_job_failed(db, task.job_id)
 
@@ -194,8 +197,8 @@ async def _run_card_b_missing_images(db, task: JobTask) -> None:
             raise BlockedTaskError(f"{line_index + 1}번째 줄이 비어 있습니다")
 
         _set_task_current_line(db, task, payload, line_index)
-        await _generate_card_b_line_image(task.job_id, line_index)
-        _raise_if_line_failed(db, task.job_id, line_index)
+        await _generate_card_b_line_image(task.job_id, line_index, line_id=line_id)
+        _raise_if_line_failed(db, task.job_id, line_index, line_id=line_id)
 
         db.refresh(job)
         lines = json.loads(job.script_json or "[]")
@@ -209,30 +212,32 @@ async def _run_card_b_single_clip(db, task: JobTask) -> None:
     from jobs_queue.worker import regenerate_clip_for_job
 
     payload = task_payload(task)
+    line_id = str(payload.get("line_id") or "")
     line_index = _resolve_line_index(db, task.job_id, payload)
     _set_task_current_line(db, task, payload, line_index)
-    await regenerate_clip_for_job(task.job_id, line_index)
-    _raise_if_line_failed(db, task.job_id, line_index)
+    await regenerate_clip_for_job(task.job_id, line_index, line_id=line_id)
+    _raise_if_line_failed(db, task.job_id, line_index, line_id=line_id)
 
 
 async def _run_regenerate_clip(db, task: JobTask) -> None:
     from jobs_queue.worker import regenerate_clip_for_job
 
     payload = task_payload(task)
+    line_id = str(payload.get("line_id") or "")
     line_index = _resolve_line_index(db, task.job_id, payload)
     _set_task_current_line(db, task, payload, line_index)
-    await regenerate_clip_for_job(task.job_id, line_index)
+    await regenerate_clip_for_job(task.job_id, line_index, line_id=line_id)
     job = db.query(Job).filter(Job.id == task.job_id).first()
     if job and getattr(job, "generation_mode", "ai_full") == "user_assets":
-        _raise_if_line_failed(db, task.job_id, line_index)
+        _raise_if_line_failed(db, task.job_id, line_index, line_id=line_id)
     else:
         _raise_if_job_failed(db, task.job_id)
 
 
-async def _generate_card_b_line_image(job_id: str, line_index: int) -> None:
+async def _generate_card_b_line_image(job_id: str, line_index: int, *, line_id: str = "") -> None:
     from jobs_queue.worker import regenerate_image_for_job
 
-    await regenerate_image_for_job(job_id, line_index)
+    await regenerate_image_for_job(job_id, line_index, line_id=line_id)
 
 
 def _raise_if_job_failed(db, job_id: str) -> None:
@@ -247,12 +252,17 @@ def _raise_if_job_failed(db, job_id: str) -> None:
         raise RuntimeError(msg)
 
 
-def _raise_if_line_failed(db, job_id: str, line_index: int) -> None:
+def _raise_if_line_failed(db, job_id: str, line_index: int, *, line_id: str = "") -> None:
     db.expire_all()
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise BlockedTaskError("작업을 찾을 수 없습니다")
     lines = json.loads(job.script_json or "[]")
+    if line_id:
+        resolved = _line_index_by_id(lines, str(line_id))
+        if resolved is None:
+            return
+        line_index = resolved
     if not (0 <= line_index < len(lines)):
         raise BlockedTaskError("줄을 찾을 수 없습니다")
     line = lines[line_index]
@@ -306,6 +316,11 @@ def _line_index_by_id(lines: list[dict], line_id: str) -> int | None:
 
 def _set_task_current_line(db, task: JobTask, payload: dict, line_index: int) -> None:
     payload["current_line_index"] = line_index
+    job = db.query(Job).filter(Job.id == task.job_id).first()
+    if job:
+        lines = json.loads(job.script_json or "[]")
+        if 0 <= line_index < len(lines) and lines[line_index].get("line_id"):
+            payload["current_line_id"] = str(lines[line_index].get("line_id"))
     payload["last_heartbeat_at"] = utc_now_naive().isoformat()
     set_task_payload(task, payload)
     heartbeat_task(db, task)
@@ -321,7 +336,11 @@ def _mark_task_lines_failed(db, task: JobTask, message: str) -> None:
     except Exception:
         return
     indexes: set[int] = set()
-    if payload.get("current_line_index") is not None:
+    if payload.get("current_line_id"):
+        idx = _line_index_by_id(lines, str(payload["current_line_id"]))
+        if idx is not None:
+            indexes.add(idx)
+    elif payload.get("current_line_index") is not None:
         indexes.add(int(payload["current_line_index"]))
     if task.kind == "card_b_missing_images":
         completed = set(payload.get("completed_line_ids") or [])

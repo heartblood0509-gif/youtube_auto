@@ -85,14 +85,20 @@ async def upload_job_files(job_id: str, file_type: str) -> bool:
     all_ok = True
 
     if file_type == "images":
-        files = sorted(glob.glob(os.path.join(job_dir, "images", "img_*.png")))
+        files = sorted(set(
+            glob.glob(os.path.join(job_dir, "images", "img_*.png"))
+            + glob.glob(os.path.join(job_dir, "images", "line_*.png"))
+        ))
         for f in files:
             r2_key = f"jobs/{job_id}/images/{os.path.basename(f)}"
             if not await upload_file(f, r2_key):
                 all_ok = False
 
     elif file_type == "clips":
-        files = sorted(glob.glob(os.path.join(job_dir, "clips", "clip_raw_*.mp4")))
+        files = sorted(set(
+            glob.glob(os.path.join(job_dir, "clips", "clip_raw_*.mp4"))
+            + glob.glob(os.path.join(job_dir, "clips", "clip_*.mp4"))
+        ))
         for f in files:
             r2_key = f"jobs/{job_id}/clips/{os.path.basename(f)}"
             if not await upload_file(f, r2_key):

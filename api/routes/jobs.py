@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Path, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from api.models import JobCreateRequest, JobResponse, JobStatus, DraftJobRequest, DraftJobResponse
+from api.models import JobCreateRequest, JobResponse, JobStatus, DraftJobRequest, DraftJobResponse, ScriptLine
 from api.deps import get_approved_user, get_user_job, get_user_job_by_uid
 from db.database import get_db
 from db.models import Job, JobTask, User, UserProduct
@@ -268,7 +268,7 @@ async def create_draft_job(
     for sub in ["images", "clips", "tts", "temp", "output"]:
         os.makedirs(os.path.join(job_dir, sub), exist_ok=True)
 
-    return DraftJobResponse(job_id=job.id)
+    return DraftJobResponse(job_id=job.id, lines=[ScriptLine(**l) for l in script_lines])
 
 
 @router.get("/", response_model=list[JobResponse])
