@@ -204,6 +204,7 @@ class MergeLineRequest(BaseModel):
 class DeleteLineRequest(BaseModel):
     """카드 B 줄 삭제 요청 (× 버튼)."""
     line_index: int = Field(..., ge=0)
+    line_id: Optional[str] = None
 
 
 class TtsPreviewBuildRequest(BaseModel):

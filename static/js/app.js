@@ -2013,6 +2013,43 @@ function renderUserLines(opts) {
 // 분할 중복 가드 + 폴링 generation token (split 발생 시 +1)
 window._splitInFlight = false;
 window._splitGen = 0;
+window._deleteLineQueue = Promise.resolve();
+window._deleteLinePending = 0;
+
+function hasPendingUserLineDelete() {
+    return (window._deleteLinePending || 0) > 0;
+}
+
+async function waitForUserLineDeleteQueue() {
+    const queue = window._deleteLineQueue;
+    if (!queue) return;
+    try { await queue; } catch (_) {}
+}
+
+function isUserLineTextFocused() {
+    const active = document.activeElement;
+    return !!(active && active.classList && active.classList.contains('user-line-text'));
+}
+
+function userLineDeleteResponseDiffers(data) {
+    const serverLines = data?.lines || [];
+    const clientIds = (window._userLineIds || []).map(id => id || '').join('|');
+    const serverIds = serverLines.map(line => line.line_id || '').join('|');
+    return serverLines.length !== (window._splitLines || []).length || serverIds !== clientIds;
+}
+
+function syncUserLineDeleteResponse(data) {
+    if (!data || !Array.isArray(data.lines)) return;
+    syncUserLineStateFromResponse(data.lines, data.sources || []);
+    window._activeUserLineIndex = normalizeUserLinePreviewIndex(window._activeUserLineIndex);
+    renderUserLines({ force: true });
+    const card = document.querySelector(`[data-line-index="${window._activeUserLineIndex}"] .user-line-text`);
+    if (card) {
+        card.focus();
+        setCaretAt(card, (window._splitLines[window._activeUserLineIndex] || '').length);
+        card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+}
 
 // contenteditable 안에서 selection의 element 기준 텍스트 오프셋. 텍스트 노드 여러 개·<br>이 끼어 있어도 정확.
 function getCaretCharOffset(el) {
@@ -2046,6 +2083,7 @@ async function saveUserLineEdit(i, el, opts) {
     try {
         if (!window._splitLines || i < 0 || i >= window._splitLines.length) return;
         if (!forceSync && window._splitInFlight) return;  // 분할/병합/삭제 진행 중엔 다음 blur로 미룸
+        if (!forceSync && hasPendingUserLineDelete()) return;
         if (isUserLineLockedForTextEdit(i)) {
             if (window._userLineDirty) window._userLineDirty.delete(i);
             return;
@@ -2104,6 +2142,9 @@ async function saveUserLineEdit(i, el, opts) {
 // 서버 텍스트(script_json)를 읽는 다음 액션 직전에 호출.
 // (1) 활성 입력란 blur → saveUserLineEdit 트리거, (2) 남은 dirty 줄 강제 sync, (3) 모든 in-flight POST 대기.
 async function flushActiveUserLineEdit(opts) {
+    if (!(opts && opts.skipDeleteQueue)) {
+        await waitForUserLineDeleteQueue();
+    }
     const skipIndexes = new Set((opts && opts.skipIndexes) || []);
     const skipWorking = !!(opts && opts.skipWorking);
     const active = document.activeElement;
@@ -2180,6 +2221,9 @@ function handleUserLineKey(ev, i, el) {
 }
 
 async function mergeLineWithPrevious(i, el) {
+    if (hasPendingUserLineDelete()) {
+        await waitForUserLineDeleteQueue();
+    }
     if (window._splitInFlight) return;
     if (i <= 0) return;
     if (!window._draftJobId) return;
@@ -2287,51 +2331,73 @@ function applyOptimisticDeleteUserLine(i) {
 async function deleteUserLine(i) {
     if (window._splitInFlight) return;
     if (!window._draftJobId) return;
+    if (!Array.isArray(window._splitLines) || window._splitLines.length <= 1) return;
+    if (!(0 <= i && i < window._splitLines.length)) return;
 
-    window._splitInFlight = true;
-    let snapshot = null;
-    try {
-        // 다른 카드들의 dirty 입력 먼저 sync (delete 응답이 그들 텍스트를 덮어쓰지 않도록)
-        const active = document.activeElement;
-        if (active && active.classList && active.classList.contains('user-line-text')) {
-            const activeCard = active.closest('.user-line-item');
-            if (activeCard && Number(activeCard.dataset.lineIndex) === i) {
-                active.onblur = null;
-                if (window._userLineDirty) window._userLineDirty.delete(i);
-            }
+    const jobId = window._draftJobId;
+    let requestedIndex = i;
+    let lineId = (window._userLineIds || [])[i] || null;
+    const active = document.activeElement;
+    if (active && active.classList && active.classList.contains('user-line-text')) {
+        const activeCard = active.closest('.user-line-item');
+        if (activeCard && Number(activeCard.dataset.lineIndex) === i) {
+            active.onblur = null;
+            if (window._userLineDirty) window._userLineDirty.delete(i);
         }
-        await flushActiveUserLineEdit({ skipIndexes: [i], skipWorking: true });
-        snapshot = applyOptimisticDeleteUserLine(i);
-        const resp = await authFetch(`/api/jobs/${window._draftJobId}/delete-line`, {
+    }
+
+    if (!hasPendingUserLineDelete()) {
+        await flushActiveUserLineEdit({ skipIndexes: [i], skipWorking: true, skipDeleteQueue: true });
+    }
+    if (!Array.isArray(window._splitLines) || window._splitLines.length <= 1) return;
+    if (lineId) {
+        const currentIndex = findUserLineIndexById(lineId);
+        if (currentIndex < 0) return;
+        i = currentIndex;
+    }
+    if (!(0 <= i && i < window._splitLines.length)) return;
+    requestedIndex = i;
+    lineId = (window._userLineIds || [])[i] || lineId;
+
+    const snapshot = applyOptimisticDeleteUserLine(i);
+    window._deleteLinePending = (window._deleteLinePending || 0) + 1;
+    const requestBody = { line_index: requestedIndex };
+    if (lineId) requestBody.line_id = lineId;
+
+    const runDelete = async () => {
+        const resp = await authFetch(`/api/jobs/${jobId}/delete-line`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ line_index: i }),
+            body: JSON.stringify(requestBody),
         });
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({ detail: '삭제 실패' }));
-            if (snapshot) restoreUserLineState(snapshot);
-            showFriendlyError(err.detail || '삭제 실패');
-            return;
+            throw new Error(err.detail || '삭제 실패');
         }
         const data = await resp.json();
-        syncUserLineStateFromResponse(data.lines, data.sources);
-        invalidateTtsSession();
-        window._userLineDirty.clear();
-        // 윗 카드(i-1)로 포커스, 없으면(첫 카드 삭제) 새 첫 카드(0)로
-        window._activeUserLineIndex = normalizeUserLinePreviewIndex(window._activeUserLineIndex);
-        renderUserLines({ force: true });
-        const card = document.querySelector(`[data-line-index="${window._activeUserLineIndex}"] .user-line-text`);
-        if (card) {
-            card.focus();
-            setCaretAt(card, (window._splitLines[window._activeUserLineIndex] || '').length);
-            card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        if (window._deleteLinePending === 1 && userLineDeleteResponseDiffers(data) && !isUserLineTextFocused()) {
+            syncUserLineDeleteResponse(data);
         }
-    } finally {
-        window._splitInFlight = false;
-    }
+    };
+
+    window._deleteLineQueue = window._deleteLineQueue
+        .catch(() => {})
+        .then(runDelete)
+        .catch(e => {
+            if ((window._deleteLinePending || 0) <= 1 && snapshot) {
+                restoreUserLineState(snapshot);
+            }
+            showFriendlyError(e.message || '삭제 실패');
+        })
+        .finally(() => {
+            window._deleteLinePending = Math.max(0, (window._deleteLinePending || 1) - 1);
+        });
 }
 
 async function splitUserLineAt(i, el) {
+    if (hasPendingUserLineDelete()) {
+        await waitForUserLineDeleteQueue();
+    }
     if (window._splitInFlight) return;
     if (!window._draftJobId) return;
 
@@ -2443,8 +2509,9 @@ async function userLineGenerateClip(i) {
     }
 }
 
-function userLineUploadImage(i) {
+async function userLineUploadImage(i) {
     if (!window._draftJobId) return;
+    await waitForUserLineDeleteQueue();
     setActiveUserLineIndex(i);
     const input = document.createElement('input');
     input.type = 'file';
@@ -2486,8 +2553,9 @@ function userLineUploadImage(i) {
     input.click();
 }
 
-function userLineUploadClip(i) {
+async function userLineUploadClip(i) {
     if (!window._draftJobId) return;
+    await waitForUserLineDeleteQueue();
     setActiveUserLineIndex(i);
     const input = document.createElement('input');
     input.type = 'file';

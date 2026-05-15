@@ -123,6 +123,10 @@ def _line_index_by_id(lines: list[dict], line_id: str) -> int | None:
     return None
 
 
+def _all_lines_have_stable_ids(lines: list[dict]) -> bool:
+    return all(str(line.get("line_id") or "").strip() for line in lines)
+
+
 def _active_task_line_ids(db: Session, job_id: str, *, include_queued: bool = True) -> set[str]:
     statuses = ACTIVE_STATUSES if include_queued else ("running", "retrying")
     tasks = db.query(JobTask).filter(JobTask.job_id == job_id, JobTask.status.in_(statuses)).all()
@@ -261,10 +265,24 @@ async def _promote_index_assets_to_line_ids(job_id: str, job_dir: str, lines: li
             stable_key = r2_job_asset_key(job_id, stable_rel)
             legacy_key = r2_job_asset_key(job_id, legacy_rel)
             try:
-                if not r2_file_exists(stable_key) and r2_file_exists(legacy_key):
+                stable_exists = await asyncio.to_thread(r2_file_exists, stable_key)
+                legacy_exists = False if stable_exists else await asyncio.to_thread(r2_file_exists, legacy_key)
+                if not stable_exists and legacy_exists:
                     await r2_copy(legacy_key, stable_key)
             except Exception as e:
                 logger.warning("[line-id-assets] R2 promote failed job=%s key=%s: %s", job_id, legacy_key, e)
+
+
+async def _maybe_promote_index_assets_to_line_ids(
+    job_id: str,
+    job_dir: str,
+    lines: list[dict],
+    *,
+    preexisting_line_ids: bool,
+) -> None:
+    if preexisting_line_ids:
+        return
+    await _promote_index_assets_to_line_ids(job_id, job_dir, lines)
 
 
 async def _delete_line_asset_kind(job_id: str, job_dir: str, line: dict, line_index: int, kind: str) -> None:
@@ -298,6 +316,7 @@ async def split_line(
         raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
     lines = json.loads(job.script_json or "[]")
     sources = json.loads(job.line_sources_json or "[]")
+    preexisting_line_ids = _all_lines_have_stable_ids(lines)
     ensure_line_ids(lines)
     n = len(lines)
     if len(sources) != n:
@@ -308,7 +327,7 @@ async def split_line(
     L = body.line_index
     job_dir = os.path.join(settings.STORAGE_DIR, job_id)
     _raise_if_lines_have_active_tasks(db, job_id, lines, [L])
-    await _promote_index_assets_to_line_ids(job_id, job_dir, lines)
+    await _maybe_promote_index_assets_to_line_ids(job_id, job_dir, lines, preexisting_line_ids=preexisting_line_ids)
     cur = lines[L]
     source = sources[L]
     old_text = cur.get("text") or ""
@@ -407,6 +426,7 @@ async def merge_line(
         raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
     lines = json.loads(job.script_json or "[]")
     sources = json.loads(job.line_sources_json or "[]")
+    preexisting_line_ids = _all_lines_have_stable_ids(lines)
     ensure_line_ids(lines)
     n = len(lines)
     if len(sources) != n:
@@ -418,7 +438,7 @@ async def merge_line(
     if not (lines[L].get("text") or "").strip():
         _raise_if_lines_have_active_tasks(db, job_id, lines, [L])
         job_dir = os.path.join(settings.STORAGE_DIR, job_id)
-        await _promote_index_assets_to_line_ids(job_id, job_dir, lines)
+        await _maybe_promote_index_assets_to_line_ids(job_id, job_dir, lines, preexisting_line_ids=preexisting_line_ids)
         await _discard_line_assets(job_id, job_dir, lines[L], L)
 
         new_lines = lines[:L] + lines[L + 1:]
@@ -435,7 +455,7 @@ async def merge_line(
 
     _raise_if_lines_have_active_tasks(db, job_id, lines, [L - 1, L])
     job_dir = os.path.join(settings.STORAGE_DIR, job_id)
-    await _promote_index_assets_to_line_ids(job_id, job_dir, lines)
+    await _maybe_promote_index_assets_to_line_ids(job_id, job_dir, lines, preexisting_line_ids=preexisting_line_ids)
     # 텍스트 단순 연결 — 분할 때 보존된 공백을 그대로 복원
     lines[L - 1]["text"] = (lines[L - 1].get("text") or "") + (lines[L].get("text") or "")
 
@@ -463,6 +483,7 @@ async def merge_line(
 async def delete_line(
     body: DeleteLineRequest,
     job_id: str = Path(..., pattern=r"^[a-f0-9]{12}$"),
+    background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
     _user: User = Depends(get_approved_user),
 ):
@@ -474,21 +495,38 @@ async def delete_line(
         raise HTTPException(status_code=409, detail=f"카드 편집 단계가 아닙니다 (상태: {job.status})")
     lines = json.loads(job.script_json or "[]")
     sources = json.loads(job.line_sources_json or "[]")
+    preexisting_line_ids = _all_lines_have_stable_ids(lines)
     ensure_line_ids(lines)
     n = len(lines)
     if len(sources) != n:
         raise HTTPException(status_code=400, detail="줄별 자산 정보가 올바르지 않습니다")
-    if not (0 <= body.line_index < n):
-        raise HTTPException(status_code=400, detail="잘못된 줄 인덱스")
-    if n <= 1:
-        raise HTTPException(status_code=400, detail="마지막 줄은 삭제할 수 없습니다")
 
-    L = body.line_index
+    requested_line_id = str(body.line_id or "").strip()
+    if requested_line_id:
+        resolved = _line_index_by_id(lines, requested_line_id)
+        if resolved is None:
+            return SplitLineResponse(
+                lines=[ScriptLine(**l) for l in lines],
+                sources=sources,
+            )
+        if n <= 1:
+            raise HTTPException(status_code=400, detail="마지막 줄은 삭제할 수 없습니다")
+        L = resolved
+    else:
+        if n <= 1:
+            raise HTTPException(status_code=400, detail="마지막 줄은 삭제할 수 없습니다")
+        if not (0 <= body.line_index < n):
+            raise HTTPException(status_code=400, detail="잘못된 줄 인덱스")
+        L = body.line_index
     job_dir = os.path.join(settings.STORAGE_DIR, job_id)
     _raise_if_lines_have_active_tasks(db, job_id, lines, [L])
-    await _promote_index_assets_to_line_ids(job_id, job_dir, lines)
-    _delete_line_assets(job_dir, lines[L], L)
-    await _delete_line_assets_r2(job_id, lines[L], L)
+    await _maybe_promote_index_assets_to_line_ids(job_id, job_dir, lines, preexisting_line_ids=preexisting_line_ids)
+    removed_line = dict(lines[L])
+    _delete_line_assets(job_dir, removed_line, L)
+    if background_tasks is not None:
+        background_tasks.add_task(_delete_line_assets_r2, job_id, removed_line, L)
+    else:
+        await _delete_line_assets_r2(job_id, removed_line, L)
 
     new_lines = lines[:L] + lines[L + 1:]
     new_sources = sources[:L] + sources[L + 1:]
