@@ -333,122 +333,121 @@ async def render_video_for_job(job_id: str):
         if not job:
             return
 
-        require_r2_for_generation()
-        update_job_progress(job_id, "generating_tts", 0.4, "TTS 나레이션 생성 중...")
-
-        lines = json.loads(job.script_json)
-        job_dir = os.path.join(settings.STORAGE_DIR, job_id)
-
-        # ─── 줄별 자산 매니페스트 (카드 B에서만 사용) ───
-        line_sources = None
-        asset_paths = None
-        if getattr(job, "generation_mode", "ai_full") == "user_assets":
-            line_sources = json.loads(job.line_sources_json or "[]")
-            if len(line_sources) != len(lines):
-                # 안전 차원: 부족분은 'ai'로 채움
-                line_sources = (line_sources + ["ai"] * len(lines))[: len(lines)]
-            asset_paths = []
-            for i, src in enumerate(line_sources):
-                if src == "clip":
-                    rel = os.path.join("clips", f"clip_raw_{i:02d}.mp4")
-                    if not await _ensure_r2_asset_local(job_id, rel):
-                        raise RuntimeError(f"{i + 1}번째 줄 영상 파일을 찾을 수 없습니다")
-                    asset_paths.append(os.path.join(job_dir, rel))
-                else:
-                    rel = os.path.join("images", f"img_{i:02d}.png")
-                    if not await _ensure_r2_asset_local(job_id, rel):
-                        raise RuntimeError(f"{i + 1}번째 줄 이미지 파일을 찾을 수 없습니다")
-                    asset_paths.append(os.path.join(job_dir, rel))
-
-        # 이미지 파일 목록 (카드 A 호환 — Ken Burns 전 줄 경로)
-        if line_sources is not None:
-            # 카드 B: 줄 인덱스 0..N-1를 직접 순회. assembler가 asset_paths를 우선 사용.
-            images = [
-                os.path.join(job_dir, "images", f"img_{i:02d}.png")
-                for i in range(len(lines))
-            ]
-        else:
-            for i in range(len(lines)):
-                await _ensure_r2_asset_local(job_id, os.path.join("images", f"img_{i:02d}.png"))
-            images = sorted(glob.glob(os.path.join(job_dir, "images", "img_*.png")))
-            if len(images) < len(lines):
-                raise RuntimeError("영상 조립에 필요한 이미지 파일이 부족합니다")
-
-        # BGM 파일 결정: 로컬 → R2 다운로드 폴백
-        bgm_path = None
-        if job.bgm_filename:
-            # 1. 로컬에 있으면 그대로 사용 (개발 모드)
-            local_bgm = os.path.join(settings.BGM_DIR, job.bgm_filename)
-            if os.path.exists(local_bgm):
-                bgm_path = local_bgm
-            # 2. 없으면 R2에서 다운로드 (배포 모드)
-            elif is_r2_enabled() and job.user_id:
-                from core.r2_storage import download_file_sync
-                import asyncio
-                r2_key = f"bgm/{job.user_id}/{job.bgm_filename}"
-                temp_bgm = os.path.join(job_dir, "temp", f"bgm_{job.bgm_filename}")
-                ok = await asyncio.to_thread(download_file_sync, r2_key, temp_bgm)
-                if ok:
-                    bgm_path = temp_bgm
-        if not bgm_path:
-            bgm_files = glob.glob(os.path.join(settings.BGM_DIR, "*.mp3"))
-            if bgm_files:
-                bgm_path = bgm_files[0]
-
-        # AI 클립이 있으면 경로 수집 (카드 A 전용)
-        clips_dir = os.path.join(job_dir, "clips")
-        if line_sources is None:
-            if (getattr(job, "video_mode", "kenburns") or "kenburns") != "kenburns":
-                for i in range(len(lines)):
-                    await _ensure_r2_asset_local(job_id, os.path.join("clips", f"clip_raw_{i:02d}.mp4"))
-            ai_clips = sorted(glob.glob(os.path.join(clips_dir, "clip_raw_*.mp4")))
-            if (getattr(job, "video_mode", "kenburns") or "kenburns") != "kenburns" and len(ai_clips) < len(lines):
-                raise RuntimeError("영상 조립에 필요한 AI 클립 파일이 부족합니다")
-        else:
-            ai_clips = None  # 카드 B는 매니페스트로 처리
-
-        keys = resolve_user_api_keys(db, job.user_id)
-
-        # 음성 단계에서 미리 생성한 TTS가 있으면 재사용
-        prebuilt_tts = bool(getattr(job, "tts_session_id", None))
-
-        config = {
-            "job_dir": job_dir,
-            "images": images,
-            "lines": lines,
-            "title": job.title,
-            "title_line1": getattr(job, "title_line1", None),
-            "title_line2": getattr(job, "title_line2", None),
-            "video_mode": getattr(job, "video_mode", "kenburns") or "kenburns",
-            "ai_clips": ai_clips if ai_clips else None,
-            "line_sources": line_sources,
-            "asset_paths": asset_paths,
-            "tts_engine": job.tts_engine,
-            "tts_speed": job.tts_speed,
-            "voice_id": job.voice_id,
-            "emotion": job.emotion,
-            "prebuilt_tts": prebuilt_tts,
-            "bgm_path": bgm_path,
-            "bgm_volume": job.bgm_volume,
-            "bgm_start_sec": job.bgm_start_sec or 0.0,
-            "font_title": settings.FONT_TITLE,
-            "font_sub": settings.FONT_SUB,
-            "typecast_api_key": keys["typecast"],
-        }
-
         try:
+            require_r2_for_generation()
+            update_job_progress(job_id, "generating_tts", 0.4, "TTS 나레이션 생성 중...")
+
+            lines = json.loads(job.script_json)
+            job_dir = os.path.join(settings.STORAGE_DIR, job_id)
+
+            # ─── 줄별 자산 매니페스트 (카드 B에서만 사용) ───
+            line_sources = None
+            asset_paths = None
+            if getattr(job, "generation_mode", "ai_full") == "user_assets":
+                line_sources = json.loads(job.line_sources_json or "[]")
+                if len(line_sources) != len(lines):
+                    # 안전 차원: 부족분은 'ai'로 채움
+                    line_sources = (line_sources + ["ai"] * len(lines))[: len(lines)]
+                asset_paths = []
+                for i, src in enumerate(line_sources):
+                    if src == "clip":
+                        rel = os.path.join("clips", f"clip_raw_{i:02d}.mp4")
+                        if not await _ensure_r2_asset_local(job_id, rel):
+                            raise RuntimeError(f"{i + 1}번째 줄 영상 파일을 찾을 수 없습니다")
+                        asset_paths.append(os.path.join(job_dir, rel))
+                    else:
+                        rel = os.path.join("images", f"img_{i:02d}.png")
+                        if not await _ensure_r2_asset_local(job_id, rel):
+                            raise RuntimeError(f"{i + 1}번째 줄 이미지 파일을 찾을 수 없습니다")
+                        asset_paths.append(os.path.join(job_dir, rel))
+
+            # 이미지 파일 목록 (카드 A 호환 — Ken Burns 전 줄 경로)
+            if line_sources is not None:
+                # 카드 B: 줄 인덱스 0..N-1를 직접 순회. assembler가 asset_paths를 우선 사용.
+                images = [
+                    os.path.join(job_dir, "images", f"img_{i:02d}.png")
+                    for i in range(len(lines))
+                ]
+            else:
+                for i in range(len(lines)):
+                    await _ensure_r2_asset_local(job_id, os.path.join("images", f"img_{i:02d}.png"))
+                images = sorted(glob.glob(os.path.join(job_dir, "images", "img_*.png")))
+                if len(images) < len(lines):
+                    raise RuntimeError("영상 조립에 필요한 이미지 파일이 부족합니다")
+
+            # BGM 파일 결정: 로컬 → R2 다운로드 폴백
+            bgm_path = None
+            if job.bgm_filename:
+                # 1. 로컬에 있으면 그대로 사용 (개발 모드)
+                local_bgm = os.path.join(settings.BGM_DIR, job.bgm_filename)
+                if os.path.exists(local_bgm):
+                    bgm_path = local_bgm
+                # 2. 없으면 R2에서 다운로드 (배포 모드)
+                elif is_r2_enabled() and job.user_id:
+                    from core.r2_storage import download_file_sync
+
+                    r2_key = f"bgm/{job.user_id}/{job.bgm_filename}"
+                    temp_bgm = os.path.join(job_dir, "temp", f"bgm_{job.bgm_filename}")
+                    ok = await asyncio.to_thread(download_file_sync, r2_key, temp_bgm)
+                    if ok:
+                        bgm_path = temp_bgm
+            if not bgm_path:
+                bgm_files = glob.glob(os.path.join(settings.BGM_DIR, "*.mp3"))
+                if bgm_files:
+                    bgm_path = bgm_files[0]
+
+            # AI 클립이 있으면 경로 수집 (카드 A 전용)
+            clips_dir = os.path.join(job_dir, "clips")
+            if line_sources is None:
+                if (getattr(job, "video_mode", "kenburns") or "kenburns") != "kenburns":
+                    for i in range(len(lines)):
+                        await _ensure_r2_asset_local(job_id, os.path.join("clips", f"clip_raw_{i:02d}.mp4"))
+                ai_clips = sorted(glob.glob(os.path.join(clips_dir, "clip_raw_*.mp4")))
+                if (getattr(job, "video_mode", "kenburns") or "kenburns") != "kenburns" and len(ai_clips) < len(lines):
+                    raise RuntimeError("영상 조립에 필요한 AI 클립 파일이 부족합니다")
+            else:
+                ai_clips = None  # 카드 B는 매니페스트로 처리
+
+            keys = resolve_user_api_keys(db, job.user_id)
+
+            # 음성 단계에서 미리 생성한 TTS가 있으면 재사용
+            prebuilt_tts = bool(getattr(job, "tts_session_id", None))
+
+            config = {
+                "job_dir": job_dir,
+                "images": images,
+                "lines": lines,
+                "title": job.title,
+                "title_line1": getattr(job, "title_line1", None),
+                "title_line2": getattr(job, "title_line2", None),
+                "video_mode": getattr(job, "video_mode", "kenburns") or "kenburns",
+                "ai_clips": ai_clips if ai_clips else None,
+                "line_sources": line_sources,
+                "asset_paths": asset_paths,
+                "tts_engine": job.tts_engine,
+                "tts_speed": job.tts_speed,
+                "voice_id": job.voice_id,
+                "emotion": job.emotion,
+                "prebuilt_tts": prebuilt_tts,
+                "bgm_path": bgm_path,
+                "bgm_volume": job.bgm_volume,
+                "bgm_start_sec": job.bgm_start_sec or 0.0,
+                "font_title": settings.FONT_TITLE,
+                "font_sub": settings.FONT_SUB,
+                "typecast_api_key": keys["typecast"],
+            }
+
             video_path = await assemble_shorts(
                 job_id=job_id,
                 config=config,
                 progress_callback=update_job_progress,
             )
 
-            from core.r2_storage import upload_job_files, is_r2_enabled
+            from core.r2_storage import delete_job_intermediate_files, upload_job_files
             if is_r2_enabled():
                 ok = await upload_job_files(job_id, "output")
                 if not ok:
                     raise RuntimeError("R2 최종 영상 업로드 실패")
-                from core.r2_storage import delete_job_intermediate_files
                 await delete_job_intermediate_files(job_id)
                 _update_r2_sync(job_id, "synced")
 

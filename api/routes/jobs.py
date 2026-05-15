@@ -67,6 +67,33 @@ def _job_to_response(job: Job, user_map: dict | None = None) -> JobResponse:
     )
 
 
+def _latest_job_task(db: Session, job_id: str) -> JobTask | None:
+    return (
+        db.query(JobTask)
+        .filter(JobTask.job_id == job_id)
+        .order_by(JobTask.created_at.desc())
+        .first()
+    )
+
+
+def _with_latest_task_state(db: Session, job: Job, user_map: dict | None = None) -> JobResponse:
+    response = _job_to_response(job, user_map)
+    task = _latest_job_task(db, job.id)
+    if not task:
+        return response
+
+    response.task_id = task.id
+    response.task_kind = task.kind
+    response.task_status = task.status
+    response.task_error = task.error_message
+
+    if job.status not in ("completed", "failed") and task.status in ("failed", "blocked"):
+        response.status = "failed"
+        response.current_step = "작업 실패"
+        response.error = task.error_message or "작업 큐가 실패했습니다"
+    return response
+
+
 def _copy_product_snapshot(product: UserProduct, dest_path: str):
     """제품 이미지를 job 폴더로 스냅샷 복사. 로컬 우선, 없으면 R2에서 다운로드."""
     from api.routes.products import _local_path
@@ -259,7 +286,7 @@ async def get_job(
 ):
     """작업 상태 조회"""
     job = get_user_job(db, job_id, _user)
-    return _job_to_response(job)
+    return _with_latest_task_state(db, job)
 
 
 @router.get("/{job_id}/stream")
@@ -303,6 +330,18 @@ async def stream_progress(
                 if job.error_message:
                     data["error"] = job.error_message
 
+                latest_task = _latest_job_task(db, job_id)
+                if latest_task:
+                    data["task_id"] = latest_task.id
+                    data["task_kind"] = latest_task.kind
+                    data["task_status"] = latest_task.status
+                    if latest_task.error_message:
+                        data["task_error"] = latest_task.error_message
+                    if job.status not in ("completed", "failed") and latest_task.status in ("failed", "blocked"):
+                        data["status"] = "failed"
+                        data["current_step"] = "작업 실패"
+                        data["error"] = latest_task.error_message or "작업 큐가 실패했습니다"
+
                 # 이미지 생성 단계: 대본 + 완성된 이미지 인덱스 전송
                 if job.status in ("pending", "generating_images", "preview_ready"):
                     try:
@@ -343,7 +382,7 @@ async def stream_progress(
                     except Exception:
                         pass
                 yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-                if job.status in ("completed", "failed"):
+                if data["status"] in ("completed", "failed"):
                     break
                 await asyncio.sleep(1)
         finally:

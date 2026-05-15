@@ -249,6 +249,10 @@ class JobResponse(BaseModel):
     topic: Optional[str] = None
     owner_nickname: Optional[str] = None
     owner_email: Optional[str] = None
+    task_id: Optional[str] = None
+    task_kind: Optional[str] = None
+    task_status: Optional[str] = None
+    task_error: Optional[str] = None
 
 
 class PreviewResponse(BaseModel):

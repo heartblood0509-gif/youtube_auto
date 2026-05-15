@@ -84,6 +84,11 @@ let bgmDuration = 0;
 let previewAudio = null;
 let isCreatingJob = false;
 
+function invalidateTtsSession() {
+    window._ttsSessionId = null;
+    window._expandedSentences = null;
+}
+
 // ── 카테고리 필드 토글 ──
 function toggleCategoryFields() {
     const category = document.getElementById('category').value;
@@ -533,6 +538,7 @@ async function approveNarration() {
     }
 
     window._approvedNarrationLines = narrationLines;
+    invalidateTtsSession();
 
     // promo_comment는 이미지 프롬프트 생성을 BGM 단계의 "이미지 생성 시작" 시점으로 연기한다.
     // (음성 단계에서 6초 초과 줄이 분리될 수 있어, 분리 반영된 텍스트로
@@ -626,6 +632,7 @@ async function loadEmotions(voiceId) {
                 container.querySelectorAll('.emotion-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 hiddenInput.value = btn.dataset.emotion;
+                invalidateTtsSession();
             });
         });
     } catch (e) {
@@ -634,14 +641,19 @@ async function loadEmotions(voiceId) {
 }
 
 // ── TTS 이벤트 리스너 ──
-document.getElementById('tts-engine').addEventListener('change', updateVoiceOptions);
+document.getElementById('tts-engine').addEventListener('change', function() {
+    invalidateTtsSession();
+    updateVoiceOptions();
+});
 document.getElementById('tts-voice').addEventListener('change', function() {
+    invalidateTtsSession();
     if (document.getElementById('tts-engine').value === 'typecast') {
         loadEmotions(this.value);
     }
 });
 document.getElementById('tts-speed').addEventListener('input', function() {
     document.getElementById('speed-val').textContent = this.value;
+    invalidateTtsSession();
 });
 
 // ── 음성 미리듣기 ──
@@ -687,26 +699,77 @@ document.getElementById('voice-preview-btn').addEventListener('click', async fun
 // ──────────────────────────────────
 // Step 5: BGM 설정
 // ──────────────────────────────────
+async function createTtsPreviewSession(sentences, contentType, topic, style) {
+    const voiceId = document.getElementById('tts-voice').value;
+    const speed = parseFloat(document.getElementById('tts-speed').value);
+    const emotion = document.getElementById('tts-emotion').value;
+
+    if (!voiceId) {
+        throw new Error('음성을 먼저 선택해주세요.');
+    }
+
+    const resp = await authFetch('/api/tts/preview-build', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            sentences,
+            voice_id: voiceId,
+            speed,
+            emotion,
+            content_type: contentType,
+            topic: topic || '',
+            style: style || 'realistic',
+        }),
+    });
+    if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.detail || 'TTS 생성 실패');
+    }
+    return await resp.json();
+}
+
 async function confirmTtsSettings() {
     // 음성 설정 화면에서 "나레이션 음성 만들기" 버튼 클릭 시.
-    // promo_comment(화장품 홍보·고정댓글 유도형)만 현재 단계에서 TTS를 미리 생성.
-    // 그 외 타입은 기존처럼 영상 조립 시 한꺼번에 TTS 생성.
+    // promo_comment와 카드 B는 렌더 전에 TTS 세션을 만들어 이후 조립 단계에서 재사용한다.
+    const isUserAssets = window._generationMode === 'user_assets';
     const category = document.getElementById('category').value;
     const contentType = category === 'cosmetics'
         ? document.getElementById('content-type').value
         : null;
     const isPromoComment = contentType === 'promo_comment';
 
-    if (isPromoComment) {
-        const narrationLines = window._approvedNarrationLines;
-        if (!narrationLines || narrationLines.length === 0) {
-            alert('먼저 나레이션을 확정해주세요');
+    if (isPromoComment || isUserAssets) {
+        if (isUserAssets) {
+            await flushActiveUserLineEdit();
+        }
+
+        if (window._ttsSessionId) {
+            advanceToStepById('step-bgm');
             return;
         }
 
-        const voiceId = document.getElementById('tts-voice').value;
-        const speed = parseFloat(document.getElementById('tts-speed').value);
-        const emotion = document.getElementById('tts-emotion').value;
+        const narrationLines = isUserAssets
+            ? (window._splitLines || []).map(s => (s || '').trim())
+            : window._approvedNarrationLines;
+        if (!narrationLines || narrationLines.length === 0) {
+            alert(isUserAssets ? '대본을 먼저 준비해주세요.' : '먼저 나레이션을 확정해주세요');
+            return;
+        }
+        const blankIdx = narrationLines.findIndex(s => !s);
+        if (blankIdx >= 0) {
+            alert(`${blankIdx + 1}번째 줄이 비어 있습니다. 대본을 입력해주세요.`);
+            if (isUserAssets) goToStep(stepIndexOf('step-user-lines'));
+            return;
+        }
+        if (isUserAssets) {
+            const statuses = window._userLineStatuses || [];
+            const missingIdx = narrationLines.findIndex((_, i) => statuses[i] !== 'ready');
+            if (missingIdx >= 0) {
+                alert(`${missingIdx + 1}번째 줄의 자산이 준비되지 않았습니다.`);
+                goToStep(stepIndexOf('step-user-lines'));
+                return;
+            }
+        }
 
         // 로딩 UX: 단계별 메시지 (Typecast 병렬 처리라 대체로 5~10초)
         showLoading('음성 생성 중... (1/2)');
@@ -715,28 +778,16 @@ async function confirmTtsSettings() {
         }, 3000);
 
         try {
-            const resp = await authFetch('/api/tts/preview-build', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    sentences: narrationLines,
-                    voice_id: voiceId,
-                    speed: speed,
-                    emotion: emotion,
-                    content_type: contentType,
-                    topic: document.getElementById('topic').value.trim(),
-                    style: 'realistic',
-                }),
-            });
+            const data = await createTtsPreviewSession(
+                narrationLines,
+                isUserAssets ? 'user_assets' : contentType,
+                isUserAssets ? selectedTitle : document.getElementById('topic').value.trim(),
+                'realistic',
+            );
             clearTimeout(loadingTimer);
-            if (!resp.ok) {
-                const err = await resp.json();
-                throw new Error(err.detail || 'TTS 생성 실패');
-            }
-            const data = await resp.json();
             window._ttsSessionId = data.session_id;
             // 분리 결과 보관 — "이미지 생성 시작" 시점에 이미지 프롬프트 생성 시 사용
-            window._expandedSentences = data.expanded_sentences || narrationLines;
+            window._expandedSentences = isPromoComment ? (data.expanded_sentences || narrationLines) : null;
         } catch (e) {
             clearTimeout(loadingTimer);
             hideLoading();
@@ -794,6 +845,11 @@ function validateBeforeCreate() {
         const voiceSel = document.getElementById('tts-voice');
         if (!voiceSel || !voiceSel.value) {
             alert('음성을 선택해주세요.');
+            goToStep(stepIndexOf('step-tts'));
+            return false;
+        }
+        if (!window._ttsSessionId) {
+            alert('나레이션 음성을 먼저 만들어주세요.');
             goToStep(stepIndexOf('step-tts'));
             return false;
         }
@@ -863,6 +919,7 @@ async function confirmDraftJob() {
             bgm_filename: selectedBgm || null,
             bgm_start_sec: parseFloat(document.getElementById('bgm-start-sec').value) || 0,
             bgm_volume: parseInt(document.getElementById('bgm-volume').value) / 100,
+            tts_session_id: window._ttsSessionId || null,
             // 제목 3종 모두 전송. title이 비면 렌더러(video_assembler.py)가 제목을 통째로 건너뜀.
             title: titleLine2 ? titleLine1 + ' ' + titleLine2 : titleLine1,
             title_line1: titleLine1,
@@ -1346,6 +1403,7 @@ function formatTime(sec) {
 // ──────────────────────────────────
 function selectGenerationMode(mode) {
     window._generationMode = mode;
+    invalidateTtsSession();
     if (mode === 'ai_full') {
         STEPS = STEPS_AI_FULL;
     } else if (mode === 'user_assets') {
@@ -1390,6 +1448,7 @@ function backToModeSelect() {
     if (p1) p1.textContent = '';
     if (p2) p2.textContent = '';
     updateSplitScriptButtonState();  // input 비웠으니 disabled 상태도 갱신
+    invalidateTtsSession();
     document.querySelectorAll('.step-section').forEach(el => el.classList.add('hidden'));
     const modeSel = document.getElementById('step-mode-select');
     if (modeSel) modeSel.classList.remove('hidden');
@@ -1476,6 +1535,7 @@ async function splitUserScript() {
         window._userLineAssetVersions = data.lines.map(() => 0);
         window._batchUserLineQueue = null;
         window._activeUserLineIndex = 0;
+        invalidateTtsSession();
 
         hideLoading();
         // step-user-script 다음이 step-user-lines (인덱스 1)
@@ -1918,6 +1978,7 @@ function getCaretCharOffset(el) {
 function handleUserLineInput(i, el) {
     if (!window._userLineDirty) window._userLineDirty = new Set();
     window._userLineDirty.add(i);
+    invalidateTtsSession();
     const card = el.closest('.user-line-item');
     if (card) card.classList.toggle('is-empty', !(el.innerText || '').trim());
 }
@@ -1960,6 +2021,7 @@ async function saveUserLineEdit(i, el, opts) {
             if (!resp.ok) throw new Error('edit-line sync 실패');
             window._splitLines[i] = next;           // 성공 시 서버 기준 갱신
             window._userLineDirty.delete(i);
+            invalidateTtsSession();
         })();
         window._userLineSyncInFlight.set(i, p);
         try {
@@ -2071,6 +2133,7 @@ async function mergeLineWithPrevious(i, el) {
         }
         const data = await resp.json();
         syncUserLineStateFromResponse(data.lines, data.sources);
+        invalidateTtsSession();
         window._userLineDirty.clear();           // 서버 응답이 진실 — dirty 다 비움
         window._splitGen += 1;
         window._activeUserLineIndex = normalizeUserLinePreviewIndex(i - 1);
@@ -2107,6 +2170,7 @@ async function deleteUserLine(i) {
         }
         const data = await resp.json();
         syncUserLineStateFromResponse(data.lines, data.sources);
+        invalidateTtsSession();
         window._userLineDirty.clear();
         window._splitGen += 1;
         // 윗 카드(i-1)로 포커스, 없으면(첫 카드 삭제) 새 첫 카드(0)로
@@ -2154,6 +2218,7 @@ async function splitUserLineAt(i, el) {
         const data = await resp.json();
         // 서버 진실로 클라이언트 상태 전면 교체
         syncUserLineStateFromResponse(data.lines, data.sources);
+        invalidateTtsSession();
         window._userLineDirty.clear();
         window._splitGen += 1;  // 진행 중 폴링 무효화
         window._activeUserLineIndex = normalizeUserLinePreviewIndex(i + 1);
@@ -2492,6 +2557,7 @@ async function proceedToTtsFromUserLines() {
     }
     // 카드 A의 validateBeforeCreate 통과를 위해 narration 흐름 채움
     window._approvedNarrationLines = lines.slice();
+    invalidateTtsSession();
     // 제목은 step-user-script에서 사용자가 입력한 값을 그대로 보존한다.
     // 예전엔 여기서 titleLine1/2/selectedTitle을 비웠는데, 그러면 사용자가 입력한
     // 제목이 confirm 시점에 빈 값으로 전송돼 영상에 제목이 안 박힌다.

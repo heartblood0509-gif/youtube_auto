@@ -631,8 +631,15 @@ async def confirm_and_render(
             job.title = body["title"]
 
         # TTS 세션 디렉터리가 별도에 있으면 job_dir/tts/로 이동
+        if not job.tts_session_id:
+            raise HTTPException(status_code=400, detail="나레이션 음성이 생성되지 않았습니다. 음성 설정 단계에서 '나레이션 음성 만들기'를 먼저 실행해주세요.")
+
+        if len(job.tts_session_id) != 12 or any(c not in "0123456789abcdef" for c in job.tts_session_id):
+            raise HTTPException(status_code=400, detail="TTS 세션 ID가 올바르지 않습니다. 음성 설정 단계에서 다시 생성해주세요.")
+
+        tts_session_dir = os.path.join(settings.STORAGE_DIR, "tts_sessions", job.tts_session_id)
+        timings_path = os.path.join(job_dir, "tts", "timings_raw.json")
         if job.tts_session_id:
-            tts_session_dir = os.path.join(settings.STORAGE_DIR, "tts_sessions", job.tts_session_id)
             if os.path.exists(tts_session_dir):
                 import shutil
                 tts_dst = os.path.join(job_dir, "tts")
@@ -644,6 +651,9 @@ async def confirm_and_render(
                 except Exception as e:
                     job.tts_session_id = None
                     print(f"[confirm user_assets] TTS 세션 이동 실패, 재생성 경로로 폴백: {e}")
+                    raise HTTPException(status_code=500, detail="TTS 세션을 작업 폴더로 이동하지 못했습니다. 음성 설정 단계에서 다시 생성해주세요.")
+            elif not os.path.exists(timings_path):
+                raise HTTPException(status_code=400, detail="TTS 세션 파일을 찾을 수 없습니다. 음성 설정 단계에서 다시 생성해주세요.")
 
         job.status = "awaiting_confirmation"
         job.current_step = "영상 제작 준비 중..."
