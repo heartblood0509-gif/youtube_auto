@@ -101,6 +101,7 @@ class ImagePromptRequest(BaseModel):
 
 
 class ScriptLine(BaseModel):
+    line_id: Optional[str] = None
     text: str
     image_prompt: str = ""
     motion: MotionType = MotionType.ZOOM_IN
@@ -174,6 +175,7 @@ class DraftJobRequest(BaseModel):
 
 class DraftJobResponse(BaseModel):
     job_id: str
+    lines: list[ScriptLine] = Field(default_factory=list)
 
 
 class SplitLineRequest(BaseModel):

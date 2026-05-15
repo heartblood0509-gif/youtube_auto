@@ -11,7 +11,15 @@ from db.models import Job
 from jobs_queue.job_manager import update_job_progress, mark_job_failed, set_video_path
 from api.deps import resolve_user_api_keys
 from core.r2_storage import is_r2_enabled, require_r2_for_generation
-from core.user_assets_visual import mark_line_asset_failed, mark_line_asset_ready, set_line_asset_progress
+from core.user_assets_visual import (
+    ensure_line_ids,
+    line_asset_rel,
+    line_asset_rel_candidates,
+    mark_line_asset_failed,
+    mark_line_asset_ready,
+    r2_job_asset_key,
+    set_line_asset_progress,
+)
 from config import settings
 
 
@@ -42,6 +50,39 @@ async def _ensure_r2_asset_local(job_id: str, relative_path: str) -> bool:
     return await asyncio.to_thread(download_file_sync, r2_key, local_path)
 
 
+async def _ensure_r2_asset_local_any(job_id: str, relative_paths: list[str]) -> str | None:
+    for rel in relative_paths:
+        if await _ensure_r2_asset_local(job_id, rel):
+            return rel
+    return None
+
+
+def _line_index_by_id(lines: list[dict[str, Any]], line_id: str) -> int | None:
+    for i, line in enumerate(lines):
+        if str(line.get("line_id")) == str(line_id):
+            return i
+    return None
+
+
+def _resolve_line_index(lines: list[dict[str, Any]], line_index: int, line_id: str | None) -> int | None:
+    if line_id:
+        return _line_index_by_id(lines, str(line_id))
+    return line_index if 0 <= line_index < len(lines) else None
+
+
+async def _delete_line_asset_kind(job_id: str, job_dir: str, line: dict[str, Any], line_index: int, kind: str) -> None:
+    from core.r2_storage import delete_object as r2_delete
+
+    for rel in line_asset_rel_candidates(kind, line, line_index):
+        p = os.path.join(job_dir, rel)
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+        await r2_delete(r2_job_asset_key(job_id, rel))
+
+
 def _job_sources(job: Job, n: int) -> list[str]:
     try:
         sources = json.loads(job.line_sources_json or "[]")
@@ -60,9 +101,12 @@ def _plan_line_by_id(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
     }
 
 
-def _set_line_progress(db, job: Job, line_index: int, action: str, step: str, message: str) -> list[dict[str, Any]]:
+def _set_line_progress(db, job: Job, line_index: int, action: str, step: str, message: str, *, line_id: str | None = None) -> list[dict[str, Any]]:
     db.refresh(job)
     lines = json.loads(job.script_json or "[]")
+    resolved_index = _resolve_line_index(lines, line_index, line_id)
+    if resolved_index is not None:
+        line_index = resolved_index
     if 0 <= line_index < len(lines):
         set_line_asset_progress(lines[line_index], action, step, message)
         job.script_json = json.dumps(lines, ensure_ascii=False)
@@ -75,29 +119,44 @@ async def _ensure_user_assets_visual_plan(db, job: Job, keys: dict[str, str]) ->
     from core.time_utils import utc_isoformat, utc_now_naive
     from core.user_assets_visual import VISUAL_PLAN_VERSION, ensure_line_ids, parse_visual_plan, visual_plan_script_hash
 
-    lines = json.loads(job.script_json or "[]")
-    changed = ensure_line_ids(lines)
-    script_hash = visual_plan_script_hash(lines)
-    plan = parse_visual_plan(getattr(job, "visual_plan_json", ""))
+    while True:
+        db.refresh(job)
+        lines = json.loads(job.script_json or "[]")
+        ids_changed = ensure_line_ids(lines)
+        if ids_changed:
+            job.script_json = json.dumps(lines, ensure_ascii=False)
+            db.commit()
+        script_hash = visual_plan_script_hash(lines)
+        plan = parse_visual_plan(getattr(job, "visual_plan_json", ""))
 
-    if plan.get("script_hash") != script_hash or plan.get("version") != VISUAL_PLAN_VERSION:
+        if plan.get("script_hash") == script_hash and plan.get("version") == VISUAL_PLAN_VERSION:
+            return plan, lines
+
         sources = _job_sources(job, len(lines))
-        plan = await generate_user_assets_visual_plan(
+        generated_plan = await generate_user_assets_visual_plan(
             lines=lines,
             sources=sources,
             style=job.style,
             api_key=keys["gemini"],
         )
-        plan["script_hash"] = script_hash
-        plan["generated_at"] = utc_isoformat(utc_now_naive())
-        job.visual_plan_json = json.dumps(plan, ensure_ascii=False)
-        changed = True
 
-    if changed:
-        job.script_json = json.dumps(lines, ensure_ascii=False)
+        db.refresh(job)
+        current_lines = json.loads(job.script_json or "[]")
+        current_ids_changed = ensure_line_ids(current_lines)
+        current_hash = visual_plan_script_hash(current_lines)
+        if current_hash != script_hash:
+            if current_ids_changed:
+                job.script_json = json.dumps(current_lines, ensure_ascii=False)
+                db.commit()
+            continue
+
+        generated_plan["script_hash"] = script_hash
+        generated_plan["generated_at"] = utc_isoformat(utc_now_naive())
+        job.visual_plan_json = json.dumps(generated_plan, ensure_ascii=False)
+        if current_ids_changed:
+            job.script_json = json.dumps(current_lines, ensure_ascii=False)
         db.commit()
-
-    return plan, lines
+        return generated_plan, current_lines
 
 
 def _reference_image_for_anchor(
@@ -123,8 +182,13 @@ def _reference_image_for_anchor(
         source = sources[i] if i < len(sources) else "ai"
         if source not in ("ai", "image", "clip"):
             continue
-        img_path = os.path.join(job_dir, "images", f"img_{i:02d}.png")
-        if not os.path.exists(img_path):
+        img_path = None
+        for rel in line_asset_rel_candidates("image", lines[i], i):
+            candidate = os.path.join(job_dir, rel)
+            if os.path.exists(candidate):
+                img_path = candidate
+                break
+        if not img_path:
             continue
         try:
             from PIL import Image
@@ -244,7 +308,7 @@ async def generate_clips_for_job(job_id: str):
         db.close()
 
 
-async def regenerate_clip_for_job(job_id: str, line_index: int):
+async def regenerate_clip_for_job(job_id: str, line_index: int, *, line_id: str | None = None):
     """단일 AI 영상 클립 재생성"""
     from core.fal_video import generate_video_clip
 
@@ -257,24 +321,40 @@ async def regenerate_clip_for_job(job_id: str, line_index: int):
         require_r2_for_generation()
         is_user_assets = getattr(job, "generation_mode", "ai_full") == "user_assets"
         lines = json.loads(job.script_json or "[]")
-        if line_index < 0 or line_index >= len(lines):
+        if is_user_assets and ensure_line_ids(lines):
+            job.script_json = json.dumps(lines, ensure_ascii=False)
+            db.commit()
+        if not line_id and 0 <= line_index < len(lines):
+            line_id = lines[line_index].get("line_id")
+        resolved_index = _resolve_line_index(lines, line_index, line_id if is_user_assets else None)
+        if resolved_index is None:
             return
+        line_index = resolved_index
+        line = lines[line_index]
 
         job_dir = os.path.join(settings.STORAGE_DIR, job_id)
-        image_path = os.path.join(job_dir, "images", f"img_{line_index:02d}.png")
-        output_path = os.path.join(job_dir, "clips", f"clip_raw_{line_index:02d}.mp4")
+        image_rel = line_asset_rel("image", line, line_index)
+        output_rel = line_asset_rel("clip", line, line_index)
+        image_path = os.path.join(job_dir, image_rel)
+        output_path = os.path.join(job_dir, output_rel)
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
         model_key = "veo_lite" if is_user_assets else (getattr(job, "video_mode", "hailuo") or "hailuo")
         keys = resolve_user_api_keys(db, job.user_id)
 
         try:
-            await _ensure_r2_asset_local(job_id, os.path.join("images", f"img_{line_index:02d}.png"))
+            image_rel = await _ensure_r2_asset_local_any(job_id, line_asset_rel_candidates("image", line, line_index)) or image_rel
+            image_path = os.path.join(job_dir, image_rel)
             if not os.path.exists(image_path):
                 raise RuntimeError("변환할 이미지 파일이 없습니다")
 
             if is_user_assets:
-                lines = _set_line_progress(db, job, line_index, "ai_clip", "converting", "AI 영상 변환 중")
+                lines = _set_line_progress(db, job, line_index, "ai_clip", "converting", "AI 영상 변환 중", line_id=line_id)
+                resolved_index = _resolve_line_index(lines, line_index, line_id)
+                if resolved_index is None:
+                    return
+                line_index = resolved_index
+                line = lines[line_index]
 
             await generate_video_clip(
                 image_path=image_path,
@@ -284,11 +364,20 @@ async def regenerate_clip_for_job(job_id: str, line_index: int):
             )
 
             if is_user_assets:
-                lines = _set_line_progress(db, job, line_index, "ai_clip", "saving", "영상 저장 중")
+                lines = _set_line_progress(db, job, line_index, "ai_clip", "saving", "영상 저장 중", line_id=line_id)
+                resolved_index = _resolve_line_index(lines, line_index, line_id)
+                if resolved_index is None:
+                    try:
+                        os.remove(output_path)
+                    except Exception:
+                        pass
+                    return
+                line_index = resolved_index
+                line = lines[line_index]
 
             from core.r2_storage import upload_file as r2_upload, is_r2_enabled
             if is_r2_enabled():
-                ok = await r2_upload(output_path, f"jobs/{job_id}/clips/clip_raw_{line_index:02d}.mp4")
+                ok = await r2_upload(output_path, r2_job_asset_key(job_id, output_rel))
                 if not ok:
                     raise RuntimeError("R2 영상 업로드 실패")
 
@@ -296,7 +385,9 @@ async def regenerate_clip_for_job(job_id: str, line_index: int):
                 db.refresh(job)
                 lines = json.loads(job.script_json or "[]")
                 sources = json.loads(job.line_sources_json or "[]")
-                if line_index < len(lines):
+                resolved_index = _resolve_line_index(lines, line_index, line_id)
+                if resolved_index is not None:
+                    line_index = resolved_index
                     while len(sources) < len(lines):
                         sources.append("ai")
                     sources[line_index] = "clip"
@@ -311,7 +402,9 @@ async def regenerate_clip_for_job(job_id: str, line_index: int):
                     db.rollback()
                     db.refresh(job)
                     lines = json.loads(job.script_json or "[]")
-                    if line_index < len(lines):
+                    resolved_index = _resolve_line_index(lines, line_index, line_id)
+                    if resolved_index is not None:
+                        line_index = resolved_index
                         mark_line_asset_failed(lines[line_index], str(e), action="ai_clip")
                         job.script_json = json.dumps(lines, ensure_ascii=False)
                         db.commit()
@@ -345,19 +438,22 @@ async def render_video_for_job(job_id: str):
             asset_paths = None
             if getattr(job, "generation_mode", "ai_full") == "user_assets":
                 line_sources = json.loads(job.line_sources_json or "[]")
+                if ensure_line_ids(lines):
+                    job.script_json = json.dumps(lines, ensure_ascii=False)
+                    db.commit()
                 if len(line_sources) != len(lines):
                     # 안전 차원: 부족분은 'ai'로 채움
                     line_sources = (line_sources + ["ai"] * len(lines))[: len(lines)]
                 asset_paths = []
                 for i, src in enumerate(line_sources):
                     if src == "clip":
-                        rel = os.path.join("clips", f"clip_raw_{i:02d}.mp4")
-                        if not await _ensure_r2_asset_local(job_id, rel):
+                        rel = await _ensure_r2_asset_local_any(job_id, line_asset_rel_candidates("clip", lines[i], i))
+                        if not rel:
                             raise RuntimeError(f"{i + 1}번째 줄 영상 파일을 찾을 수 없습니다")
                         asset_paths.append(os.path.join(job_dir, rel))
                     else:
-                        rel = os.path.join("images", f"img_{i:02d}.png")
-                        if not await _ensure_r2_asset_local(job_id, rel):
+                        rel = await _ensure_r2_asset_local_any(job_id, line_asset_rel_candidates("image", lines[i], i))
+                        if not rel:
                             raise RuntimeError(f"{i + 1}번째 줄 이미지 파일을 찾을 수 없습니다")
                         asset_paths.append(os.path.join(job_dir, rel))
 
@@ -365,7 +461,7 @@ async def render_video_for_job(job_id: str):
             if line_sources is not None:
                 # 카드 B: 줄 인덱스 0..N-1를 직접 순회. assembler가 asset_paths를 우선 사용.
                 images = [
-                    os.path.join(job_dir, "images", f"img_{i:02d}.png")
+                    os.path.join(job_dir, line_asset_rel("image", lines[i], i))
                     for i in range(len(lines))
                 ]
             else:
@@ -459,7 +555,7 @@ async def render_video_for_job(job_id: str):
         db.close()
 
 
-async def regenerate_image_for_job(job_id: str, line_index: int, korean_request: str = None, english_prompt: str = None):
+async def regenerate_image_for_job(job_id: str, line_index: int, korean_request: str = None, english_prompt: str = None, *, line_id: str | None = None):
     """단일 이미지 재생성 — 영어 프롬프트 직접 사용 또는 한글→영어 변환.
 
     카드 B(generation_mode=='user_assets')에서는 Job 전체 상태를 바꾸지 않고
@@ -483,11 +579,20 @@ async def regenerate_image_for_job(job_id: str, line_index: int, korean_request:
         is_user_assets = getattr(job, "generation_mode", "ai_full") == "user_assets"
 
         lines = json.loads(job.script_json)
-        if line_index < 0 or line_index >= len(lines):
+        if is_user_assets and ensure_line_ids(lines):
+            job.script_json = json.dumps(lines, ensure_ascii=False)
+            db.commit()
+        if not line_id and 0 <= line_index < len(lines):
+            line_id = lines[line_index].get("line_id")
+        resolved_index = _resolve_line_index(lines, line_index, line_id if is_user_assets else None)
+        if resolved_index is None:
             return
+        line_index = resolved_index
         line = lines[line_index]
         job_dir = os.path.join(settings.STORAGE_DIR, job_id)
-        output_path = os.path.join(job_dir, "images", f"img_{line_index:02d}.png")
+        output_rel = line_asset_rel("image", line, line_index)
+        output_path = os.path.join(job_dir, output_rel)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
         keys = resolve_user_api_keys(db, job.user_id)
 
@@ -496,13 +601,17 @@ async def regenerate_image_for_job(job_id: str, line_index: int, korean_request:
             line_plan = {}
             sources = _job_sources(job, len(lines))
             if is_user_assets:
-                lines = _set_line_progress(db, job, line_index, "ai_image", "planning", "프롬프트 구성 중")
-                if line_index < 0 or line_index >= len(lines):
+                lines = _set_line_progress(db, job, line_index, "ai_image", "planning", "프롬프트 구성 중", line_id=line_id)
+                resolved_index = _resolve_line_index(lines, line_index, line_id)
+                if resolved_index is None:
                     return
+                line_index = resolved_index
                 line = lines[line_index]
                 plan, lines = await _ensure_user_assets_visual_plan(db, job, keys)
-                if line_index < 0 or line_index >= len(lines):
+                resolved_index = _resolve_line_index(lines, line_index, line_id)
+                if resolved_index is None:
                     return
+                line_index = resolved_index
                 line = lines[line_index]
                 sources = _job_sources(job, len(lines))
                 line_plan = _plan_line_by_id(plan).get(str(line.get("line_id")), {})
@@ -519,6 +628,15 @@ async def regenerate_image_for_job(job_id: str, line_index: int, korean_request:
                     narration_text=line["text"],
                     api_key=keys["gemini"],
                 )
+
+            if is_user_assets:
+                db.refresh(job)
+                lines = json.loads(job.script_json or "[]")
+                resolved_index = _resolve_line_index(lines, line_index, line_id)
+                if resolved_index is None:
+                    return
+                line_index = resolved_index
+                line = lines[line_index]
 
             # 새 프롬프트를 script_json에 반영 (접두어 없는 원본만 저장)
             line["image_prompt"] = prompt
@@ -567,9 +685,12 @@ async def regenerate_image_for_job(job_id: str, line_index: int, korean_request:
                         pass
 
             if is_user_assets:
-                lines = _set_line_progress(db, job, line_index, "ai_image", "generating", "이미지 생성 중")
-                if line_index < len(lines):
-                    line = lines[line_index]
+                lines = _set_line_progress(db, job, line_index, "ai_image", "generating", "이미지 생성 중", line_id=line_id)
+                resolved_index = _resolve_line_index(lines, line_index, line_id)
+                if resolved_index is None:
+                    return
+                line_index = resolved_index
+                line = lines[line_index]
 
             await generate_image(
                 prompt=final_prompt,
@@ -581,15 +702,17 @@ async def regenerate_image_for_job(job_id: str, line_index: int, korean_request:
 
             # 사용자 업로드 영상이 있던 줄에 AI 이미지를 새로 생성한 경우 정리
             if is_user_assets:
-                lines = _set_line_progress(db, job, line_index, "ai_image", "saving", "결과 저장 중")
-                prev_clip = os.path.join(job_dir, "clips", f"clip_raw_{line_index:02d}.mp4")
-                if os.path.exists(prev_clip):
+                lines = _set_line_progress(db, job, line_index, "ai_image", "saving", "결과 저장 중", line_id=line_id)
+                resolved_index = _resolve_line_index(lines, line_index, line_id)
+                if resolved_index is None:
                     try:
-                        os.remove(prev_clip)
+                        os.remove(output_path)
                     except Exception:
                         pass
-                from core.r2_storage import delete_object as r2_delete
-                await r2_delete(f"jobs/{job_id}/clips/clip_raw_{line_index:02d}.mp4")
+                    return
+                line_index = resolved_index
+                line = lines[line_index]
+                await _delete_line_asset_kind(job_id, job_dir, line, line_index, "clip")
 
                 # 줄별 자산 출처와 상태 갱신
                 sources = json.loads(job.line_sources_json or "[]")
@@ -605,14 +728,16 @@ async def regenerate_image_for_job(job_id: str, line_index: int, korean_request:
 
             from core.r2_storage import upload_file as r2_upload, is_r2_enabled
             if is_r2_enabled():
-                ok = await r2_upload(output_path, f"jobs/{job_id}/images/img_{line_index:02d}.png")
+                ok = await r2_upload(output_path, r2_job_asset_key(job_id, output_rel))
                 if not ok:
                     raise RuntimeError("R2 이미지 업로드 실패")
 
             if is_user_assets:
                 db.refresh(job)
                 lines = json.loads(job.script_json or "[]")
-                if line_index < len(lines):
+                resolved_index = _resolve_line_index(lines, line_index, line_id)
+                if resolved_index is not None:
+                    line_index = resolved_index
                     mark_line_asset_ready(lines[line_index], bump_version=True)
                     job.script_json = json.dumps(lines, ensure_ascii=False)
                     db.commit()
@@ -624,7 +749,9 @@ async def regenerate_image_for_job(job_id: str, line_index: int, korean_request:
                     db.rollback()
                     db.refresh(job)
                     lines = json.loads(job.script_json or "[]")
-                    if line_index < len(lines):
+                    resolved_index = _resolve_line_index(lines, line_index, line_id)
+                    if resolved_index is not None:
+                        line_index = resolved_index
                         mark_line_asset_failed(lines[line_index], str(e), action="ai_image")
                     job.script_json = json.dumps(lines, ensure_ascii=False)
                     db.commit()
@@ -638,5 +765,16 @@ async def regenerate_image_for_job(job_id: str, line_index: int, korean_request:
 
 async def regenerate_missing_images_for_job(job_id: str, line_indexes: list[int]):
     """카드 B 일괄 이미지 생성: 순서대로 생성해 같은 anchor의 이전 이미지를 reference로 쓸 수 있게 한다."""
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        lines = json.loads(job.script_json or "[]") if job else []
+        ids_by_index = {
+            i: str(lines[i].get("line_id"))
+            for i in line_indexes
+            if 0 <= i < len(lines) and lines[i].get("line_id")
+        }
+    finally:
+        db.close()
     for line_index in line_indexes:
-        await regenerate_image_for_job(job_id, line_index)
+        await regenerate_image_for_job(job_id, line_index, line_id=ids_by_index.get(line_index))

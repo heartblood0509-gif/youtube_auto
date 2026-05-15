@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 import uuid
 from typing import Any
@@ -20,6 +21,42 @@ ASSET_PROGRESS_KEYS = ("asset_action", "asset_step", "asset_message")
 
 def new_line_id() -> str:
     return uuid.uuid4().hex[:12]
+
+
+def safe_line_id(line: dict[str, Any]) -> str:
+    raw = str(line.get("line_id") or "").strip()
+    return "".join(ch for ch in raw if ch.isalnum() or ch in ("-", "_"))
+
+
+def legacy_line_asset_rel(kind: str, index: int) -> str:
+    if kind == "image":
+        return os.path.join("images", f"img_{index:02d}.png")
+    if kind == "clip":
+        return os.path.join("clips", f"clip_raw_{index:02d}.mp4")
+    raise ValueError(f"unknown line asset kind: {kind}")
+
+
+def line_asset_rel(kind: str, line: dict[str, Any], index: int | None = None) -> str:
+    line_id = safe_line_id(line)
+    if kind == "image" and line_id:
+        return os.path.join("images", f"line_{line_id}.png")
+    if kind == "clip" and line_id:
+        return os.path.join("clips", f"clip_{line_id}.mp4")
+    if index is None:
+        raise ValueError("index is required when line_id is missing")
+    return legacy_line_asset_rel(kind, index)
+
+
+def line_asset_rel_candidates(kind: str, line: dict[str, Any], index: int) -> list[str]:
+    primary = line_asset_rel(kind, line, index)
+    legacy = legacy_line_asset_rel(kind, index)
+    if primary == legacy:
+        return [primary]
+    return [primary, legacy]
+
+
+def r2_job_asset_key(job_id: str, relative_path: str) -> str:
+    return f"jobs/{job_id}/{relative_path.replace(os.sep, '/')}"
 
 
 def ensure_line_ids(lines: list[dict[str, Any]]) -> bool:

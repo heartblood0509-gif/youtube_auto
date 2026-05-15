@@ -60,6 +60,7 @@ let currentStepIndex = 0;
 window._generationMode = null;  // 'ai_full' | 'user_assets' — 모드 선택 전엔 null
 window._draftJobId = null;       // 카드 B: draft Job ID
 window._splitLines = [];         // 카드 B: 쪼개진 대본 (서버 sync 기준 — 마지막으로 서버에 반영 확인된 값)
+window._userLineIds = [];         // 카드 B: 서버 line_id 기준 줄 정체성
 window._userScript = '';         // 카드 B: 원본 자유 대본
 // Part 3: 화면 draft / 서버 sync 기준 / dirty 분리
 window._userLineDirty = new Set();              // sync 필요한 줄 인덱스
@@ -1431,6 +1432,7 @@ function backToModeSelect() {
         // draft job은 서버에 남지만 사용자가 다른 모드로 갈 수도 있으므로 클라 상태만 정리
         window._draftJobId = null;
         window._splitLines = [];
+        window._userLineIds = [];
         window._activeUserLineIndex = 0;
     }
     // 제목 상태 초기화 (다른 모드로 가도 잔재가 새지 않도록)
@@ -1527,12 +1529,17 @@ async function splitUserScript() {
         }
         const draft = await draftResp.json();
         window._draftJobId = draft.job_id;
+        const draftLines = Array.isArray(draft.lines) && draft.lines.length
+            ? draft.lines
+            : data.lines.map(text => ({ text, status: 'pending', asset_version: 0, line_id: null }));
+        window._splitLines = draftLines.map(line => line.text || '');
+        window._userLineIds = draftLines.map(line => line.line_id || null);
         // 모드 B 줄별 상태 (클라 캐시) — 'pending'|'ready'|'failed'
-        window._userLineStatuses = data.lines.map(() => 'pending');
+        window._userLineStatuses = draftLines.map(line => line.status || 'pending');
         // 줄별 자산 출처 (클라 캐시) — 'ai'|'image'|'clip'
-        window._userLineSources = data.lines.map(() => 'ai');
-        window._userLineProgress = data.lines.map(() => null);
-        window._userLineAssetVersions = data.lines.map(() => 0);
+        window._userLineSources = draftLines.map(() => 'ai');
+        window._userLineProgress = draftLines.map(() => null);
+        window._userLineAssetVersions = draftLines.map(line => normalizeUserLineAssetVersion(line));
         window._batchUserLineQueue = null;
         window._activeUserLineIndex = 0;
         invalidateTtsSession();
@@ -1554,6 +1561,11 @@ function normalizeUserLinePreviewIndex(index) {
     if (lines.length === 0) return 0;
     const n = Number.isInteger(index) ? index : 0;
     return Math.max(0, Math.min(n, lines.length - 1));
+}
+
+function findUserLineIndexById(lineId) {
+    if (!lineId) return -1;
+    return (window._userLineIds || []).findIndex(id => id && String(id) === String(lineId));
 }
 
 function normalizeUserLineProgress(line) {
@@ -1634,6 +1646,11 @@ function isUserLineWorking(i, status) {
     return status === 'pending' && !!(window._userLineBusy?.has(i) || getUserLineProgress(i));
 }
 
+function isUserLineLockedForTextEdit(i) {
+    const status = (window._userLineStatuses || [])[i] || 'pending';
+    return isUserLineWorking(i, status);
+}
+
 function getUserLineSourceLabel(source, status, progress) {
     if (status === 'pending' && progress) return getUserLineActionLabel(progress.asset_action);
     if (status === 'failed') return '실패';
@@ -1654,11 +1671,26 @@ function setUserLineBusy(i, busy) {
 }
 
 function syncUserLineStateFromResponse(lines, sources) {
+    const oldIds = window._userLineIds || [];
+    const busyIds = new Set(
+        Array.from(window._userLineBusy || [])
+            .map(i => oldIds[i])
+            .filter(Boolean)
+            .map(String)
+    );
     window._splitLines = (lines || []).map(l => l.text);
+    window._userLineIds = (lines || []).map(l => l.line_id || null);
     window._userLineSources = sources || [];
     window._userLineStatuses = (lines || []).map(l => l.status);
     syncUserLineProgressFromLines(lines || []);
     syncUserLineAssetVersionsFromLines(lines || []);
+    if (busyIds.size) {
+        window._userLineBusy = new Set(
+            (window._userLineIds || [])
+                .map((id, i) => id && busyIds.has(String(id)) ? i : -1)
+                .filter(i => i >= 0)
+        );
+    }
 }
 
 function updateBatchGenerateButton() {
@@ -1839,6 +1871,12 @@ function updateRenderedUserLineCard(i) {
         buttons.innerHTML = getUserLineButtonsHtml(i, state.source, state.status, state.activeAction, state.working);
     }
 
+    const textEl = card.querySelector('.user-line-text');
+    if (textEl) {
+        textEl.contentEditable = state.working ? 'false' : 'true';
+        textEl.setAttribute('aria-disabled', state.working ? 'true' : 'false');
+    }
+
     let failReason = card.querySelector('.fail-reason');
     if (failed && !failReason) {
         card.insertAdjacentHTML('beforeend', '<div class="fail-reason">실패: 다시 시도하거나 직접 업로드해주세요.</div>');
@@ -1924,13 +1962,14 @@ function renderUserLines(opts) {
         const imageUploadText = activeAction === 'image_upload' ? getUserLineButtonLabel(activeAction) : '이미지 업로드';
         const clipUploadText = activeAction === 'clip_upload' ? getUserLineButtonLabel(activeAction) : '영상 업로드';
         // × 버튼은 항상 렌더. 가시성은 CSS(.is-empty 부모일 때만 표시)로 제어.
-        const deleteBtn = `<button class="user-line-delete" onclick="deleteUserLine(${i})" title="빈 카드 삭제" aria-label="빈 카드 삭제">×</button>`;
+        const deleteBtn = `<button class="user-line-delete" onclick="event.stopPropagation(); deleteUserLine(${i})" title="빈 카드 삭제" aria-label="빈 카드 삭제">×</button>`;
         return `
             <div class="${cardClasses.join(' ')}" data-line-index="${i}" onclick="setActiveUserLineIndex(${i})">
                 ${deleteBtn}
                 <div class="user-line-num">${i + 1}</div>
                 <div class="user-line-text"
-                     contenteditable="true"
+                     contenteditable="${working ? 'false' : 'true'}"
+                     aria-disabled="${working ? 'true' : 'false'}"
                      spellcheck="false"
                      title="클릭해서 직접 수정 (Enter로 분할, 첫 글자 앞 Backspace로 윗 카드와 병합, Ctrl+Z로 되돌리기)"
                      data-placeholder="비어 있는 줄 — 내용을 입력하거나 위/아래 카드와 묶어 사용하세요"
@@ -1976,6 +2015,7 @@ function getCaretCharOffset(el) {
 // oninput: dirty 표시 + .is-empty 시각 토글만 한다.
 // _splitLines(서버 sync 기준)는 절대 건드리지 않아야 saveUserLineEdit의 비교문이 정상 동작한다.
 function handleUserLineInput(i, el) {
+    if (isUserLineLockedForTextEdit(i)) return;
     if (!window._userLineDirty) window._userLineDirty = new Set();
     window._userLineDirty.add(i);
     invalidateTtsSession();
@@ -1992,6 +2032,10 @@ async function saveUserLineEdit(i, el, opts) {
     try {
         if (!window._splitLines || i < 0 || i >= window._splitLines.length) return;
         if (!forceSync && window._splitInFlight) return;  // 분할/병합/삭제 진행 중엔 다음 blur로 미룸
+        if (isUserLineLockedForTextEdit(i)) {
+            if (window._userLineDirty) window._userLineDirty.delete(i);
+            return;
+        }
 
         const dirty = window._userLineDirty && window._userLineDirty.has(i);
         const next = (el.innerText || '');  // 화면 draft
@@ -2045,15 +2089,24 @@ async function saveUserLineEdit(i, el, opts) {
 
 // 서버 텍스트(script_json)를 읽는 다음 액션 직전에 호출.
 // (1) 활성 입력란 blur → saveUserLineEdit 트리거, (2) 남은 dirty 줄 강제 sync, (3) 모든 in-flight POST 대기.
-async function flushActiveUserLineEdit() {
+async function flushActiveUserLineEdit(opts) {
+    const skipIndexes = new Set((opts && opts.skipIndexes) || []);
+    const skipWorking = !!(opts && opts.skipWorking);
     const active = document.activeElement;
     if (active && active.classList && active.classList.contains('user-line-text')) {
-        active.blur();  // onblur가 saveUserLineEdit를 발사
+        const card = active.closest('.user-line-item');
+        const idx = card ? Number(card.dataset.lineIndex) : NaN;
+        if (!skipIndexes.has(idx) && !(skipWorking && isUserLineLockedForTextEdit(idx))) {
+            active.blur();  // onblur가 saveUserLineEdit를 발사
+        }
     }
     // 최대 5회 반복: flush 도중 사용자가 다른 카드를 다시 dirty로 만들어도 잡아냄
     for (let n = 0; n < 5; n++) {
         if (!window._userLineDirty || window._userLineDirty.size === 0) break;
-        const ids = Array.from(window._userLineDirty);
+        const ids = Array.from(window._userLineDirty).filter(i => (
+            !skipIndexes.has(i) && !(skipWorking && isUserLineLockedForTextEdit(i))
+        ));
+        if (ids.length === 0) break;
         for (const i of ids) {
             const el = document.querySelector(`[data-line-index="${i}"] .user-line-text`);
             if (el) {
@@ -2087,6 +2140,10 @@ function setCaretAt(el, charOffset) {
 }
 
 function handleUserLineKey(ev, i, el) {
+    if (isUserLineLockedForTextEdit(i)) {
+        ev.preventDefault();
+        return;
+    }
     if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
         ev.preventDefault();
         splitUserLineAt(i, el);
@@ -2097,7 +2154,8 @@ function handleUserLineKey(ev, i, el) {
             const offset = getCaretCharOffset(el);
             if (offset === 0 && i > 0) {
                 ev.preventDefault();
-                mergeLineWithPrevious(i, el);
+                if (!(el.innerText || '').trim()) deleteUserLine(i);
+                else mergeLineWithPrevious(i, el);
             }
         }
     } else if (ev.key === 'Escape') {
@@ -2118,7 +2176,7 @@ async function mergeLineWithPrevious(i, el) {
     window._splitInFlight = true;
     try {
         // 다른 카드들의 dirty 입력을 먼저 sync (merge 응답이 다른 카드 텍스트를 덮어쓰지 않도록)
-        await flushActiveUserLineEdit();
+        await flushActiveUserLineEdit({ skipWorking: true });
         // 합쳐진 후 캐럿이 갈 위치 = (sync 후) 이전 줄 끝의 문자 인덱스
         const prevLen = (window._splitLines[i - 1] || '').length;
         const resp = await authFetch(`/api/jobs/${window._draftJobId}/merge-line`, {
@@ -2150,14 +2208,86 @@ async function mergeLineWithPrevious(i, el) {
     }
 }
 
+function reindexUserLineIndexSet(set, removedIndex) {
+    return new Set(
+        Array.from(set || [])
+            .filter(i => i !== removedIndex)
+            .map(i => i > removedIndex ? i - 1 : i)
+    );
+}
+
+function removeUserLineArrayIndex(arr, i) {
+    return Array.isArray(arr) ? arr.slice(0, i).concat(arr.slice(i + 1)) : [];
+}
+
+function snapshotUserLineState() {
+    return {
+        splitLines: (window._splitLines || []).slice(),
+        lineIds: (window._userLineIds || []).slice(),
+        sources: (window._userLineSources || []).slice(),
+        statuses: (window._userLineStatuses || []).slice(),
+        progress: (window._userLineProgress || []).slice(),
+        versions: (window._userLineAssetVersions || []).slice(),
+        dirty: new Set(window._userLineDirty || []),
+        busy: new Set(window._userLineBusy || []),
+        activeIndex: window._activeUserLineIndex || 0,
+    };
+}
+
+function restoreUserLineState(snapshot) {
+    window._splitLines = snapshot.splitLines;
+    window._userLineIds = snapshot.lineIds;
+    window._userLineSources = snapshot.sources;
+    window._userLineStatuses = snapshot.statuses;
+    window._userLineProgress = snapshot.progress;
+    window._userLineAssetVersions = snapshot.versions;
+    window._userLineDirty = snapshot.dirty;
+    window._userLineBusy = snapshot.busy;
+    window._activeUserLineIndex = snapshot.activeIndex;
+    renderUserLines({ force: true });
+}
+
+function applyOptimisticDeleteUserLine(i) {
+    const snapshot = snapshotUserLineState();
+    window._splitLines = removeUserLineArrayIndex(window._splitLines, i);
+    window._userLineIds = removeUserLineArrayIndex(window._userLineIds, i);
+    window._userLineSources = removeUserLineArrayIndex(window._userLineSources, i);
+    window._userLineStatuses = removeUserLineArrayIndex(window._userLineStatuses, i);
+    window._userLineProgress = removeUserLineArrayIndex(window._userLineProgress, i);
+    window._userLineAssetVersions = removeUserLineArrayIndex(window._userLineAssetVersions, i);
+    window._userLineDirty = reindexUserLineIndexSet(window._userLineDirty, i);
+    window._userLineBusy = reindexUserLineIndexSet(window._userLineBusy, i);
+    const targetIdx = i > 0 ? i - 1 : 0;
+    window._activeUserLineIndex = normalizeUserLinePreviewIndex(targetIdx);
+    window._splitGen += 1;
+    renderUserLines({ force: true });
+    const card = document.querySelector(`[data-line-index="${window._activeUserLineIndex}"] .user-line-text`);
+    if (card) {
+        card.focus();
+        setCaretAt(card, (window._splitLines[window._activeUserLineIndex] || '').length);
+        card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+    return snapshot;
+}
+
 async function deleteUserLine(i) {
     if (window._splitInFlight) return;
     if (!window._draftJobId) return;
 
     window._splitInFlight = true;
+    let snapshot = null;
     try {
         // 다른 카드들의 dirty 입력 먼저 sync (delete 응답이 그들 텍스트를 덮어쓰지 않도록)
-        await flushActiveUserLineEdit();
+        const active = document.activeElement;
+        if (active && active.classList && active.classList.contains('user-line-text')) {
+            const activeCard = active.closest('.user-line-item');
+            if (activeCard && Number(activeCard.dataset.lineIndex) === i) {
+                active.onblur = null;
+                if (window._userLineDirty) window._userLineDirty.delete(i);
+            }
+        }
+        await flushActiveUserLineEdit({ skipIndexes: [i], skipWorking: true });
+        snapshot = applyOptimisticDeleteUserLine(i);
         const resp = await authFetch(`/api/jobs/${window._draftJobId}/delete-line`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2165,6 +2295,7 @@ async function deleteUserLine(i) {
         });
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({ detail: '삭제 실패' }));
+            if (snapshot) restoreUserLineState(snapshot);
             showFriendlyError(err.detail || '삭제 실패');
             return;
         }
@@ -2172,15 +2303,13 @@ async function deleteUserLine(i) {
         syncUserLineStateFromResponse(data.lines, data.sources);
         invalidateTtsSession();
         window._userLineDirty.clear();
-        window._splitGen += 1;
         // 윗 카드(i-1)로 포커스, 없으면(첫 카드 삭제) 새 첫 카드(0)로
-        const targetIdx = i > 0 ? i - 1 : 0;
-        window._activeUserLineIndex = normalizeUserLinePreviewIndex(targetIdx);
+        window._activeUserLineIndex = normalizeUserLinePreviewIndex(window._activeUserLineIndex);
         renderUserLines({ force: true });
-        const card = document.querySelector(`[data-line-index="${targetIdx}"] .user-line-text`);
+        const card = document.querySelector(`[data-line-index="${window._activeUserLineIndex}"] .user-line-text`);
         if (card) {
             card.focus();
-            setCaretAt(card, (window._splitLines[targetIdx] || '').length);
+            setCaretAt(card, (window._splitLines[window._activeUserLineIndex] || '').length);
             card.scrollIntoView({ block: 'center', behavior: 'smooth' });
         }
     } finally {
@@ -2204,7 +2333,7 @@ async function splitUserLineAt(i, el) {
     window._splitInFlight = true;
     try {
         // 다른 카드들의 dirty 입력을 먼저 서버에 sync — 그래야 서버 응답이 최신 텍스트를 담는다
-        await flushActiveUserLineEdit();
+        await flushActiveUserLineEdit({ skipWorking: true });
         const resp = await authFetch(`/api/jobs/${window._draftJobId}/split-line`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2238,7 +2367,7 @@ async function userLineGenerateAI(i) {
     if (!window._draftJobId) return;
     setActiveUserLineIndex(i);
     // 서버가 script_json의 최신 텍스트로 프롬프트를 생성하도록 입력 sync 먼저
-    await flushActiveUserLineEdit();
+    await flushActiveUserLineEdit({ skipWorking: true });
     setUserLineBusy(i, true);
     setUserLineProgress(i, 'ai_image', 'queued', 'AI 이미지 생성 대기 중');
     window._userLineStatuses[i] = 'pending';
@@ -2275,7 +2404,7 @@ async function userLineGenerateClip(i) {
     }
 
     setActiveUserLineIndex(i);
-    await flushActiveUserLineEdit();
+    await flushActiveUserLineEdit({ skipWorking: true });
     setUserLineBusy(i, true);
     setUserLineProgress(i, 'ai_clip', 'queued', 'AI 영상 변환 대기 중');
     window._userLineStatuses[i] = 'pending';
@@ -2389,7 +2518,7 @@ function userLineUploadClip(i) {
 async function batchGenerateMissingImages() {
     if (!window._draftJobId) return;
     // 모든 빈 카드에 대해 서버가 최신 텍스트로 프롬프트를 만들도록 입력 sync 먼저
-    await flushActiveUserLineEdit();
+    await flushActiveUserLineEdit({ skipWorking: true });
     const missing = window._userLineSources.map((s, i) => (s === 'ai' && window._userLineStatuses[i] !== 'ready') ? i : -1).filter(i => i >= 0);
     if (missing.length === 0) {
         alert('이미지가 없는 AI 줄이 없습니다.');
@@ -2455,8 +2584,12 @@ function pollUserLineStatus(i, targetSource, fallbackSource) {
     // 여러 줄 생성 중에도 /preview는 한 번만 가져와 전체 줄 상태를 반영한다.
     if (!window._draftJobId) return;
     const state = getUserLinePollState();
+    const lineId = (window._userLineIds || [])[i] || null;
+    const key = lineId ? `id:${lineId}` : `idx:${i}`;
     state.jobId = window._draftJobId;
-    state.entries.set(i, {
+    state.entries.set(key, {
+        index: i,
+        lineId,
         targetSource: targetSource || 'ai',
         fallbackSource: fallbackSource || null,
         startGen: window._splitGen || 0,
@@ -2476,13 +2609,17 @@ async function runUserLinePollTick() {
 
     const changed = new Set();
     const maxTries = 10800;  // 최대 6시간. 실패 판단은 서버 DB 상태만 신뢰한다.
-    for (const [i, entry] of Array.from(state.entries.entries())) {
-        if ((window._splitGen || 0) !== entry.startGen || entry.tries >= maxTries) {
-            setUserLineBusy(i, false);
-            clearUserLineProgress(i);
-            if (entry.fallbackSource) window._userLineSources[i] = entry.fallbackSource;
-            state.entries.delete(i);
-            changed.add(i);
+    for (const [key, entry] of Array.from(state.entries.entries())) {
+        const i = entry.lineId ? findUserLineIndexById(entry.lineId) : entry.index;
+        const staleIndexOnlyEntry = !entry.lineId && (window._splitGen || 0) !== entry.startGen;
+        if (i < 0 || staleIndexOnlyEntry || entry.tries >= maxTries) {
+            if (i >= 0) {
+                setUserLineBusy(i, false);
+                clearUserLineProgress(i);
+                if (entry.fallbackSource) window._userLineSources[i] = entry.fallbackSource;
+                changed.add(i);
+            }
+            state.entries.delete(key);
         }
     }
 
@@ -2495,10 +2632,22 @@ async function runUserLinePollTick() {
         const r = await authFetch(`/api/jobs/${state.jobId}/preview`);
         if (r.ok) {
             const preview = await r.json();
-            for (const [i, entry] of Array.from(state.entries.entries())) {
+            const previewLineIds = (preview.lines || []).map(line => line.line_id || null);
+            for (const [key, entry] of Array.from(state.entries.entries())) {
                 entry.tries += 1;
+                const i = entry.lineId
+                    ? previewLineIds.findIndex(id => id && String(id) === String(entry.lineId))
+                    : entry.index;
+                if (i < 0) {
+                    state.entries.delete(key);
+                    continue;
+                }
                 const line = preview.lines && preview.lines[i];
                 if (!line) continue;
+                entry.index = i;
+                if (line.line_id) {
+                    window._userLineIds[i] = line.line_id;
+                }
                 setUserLineAssetVersion(i, line.asset_version);
 
                 if (line.status === 'failed') {
@@ -2506,7 +2655,7 @@ async function runUserLinePollTick() {
                     window._userLineStatuses[i] = 'failed';
                     window._userLineProgress[i] = normalizeUserLineProgress(line);
                     if (entry.fallbackSource) window._userLineSources[i] = entry.fallbackSource;
-                    state.entries.delete(i);
+                    state.entries.delete(key);
                     changed.add(i);
                     continue;
                 }
@@ -2522,7 +2671,7 @@ async function runUserLinePollTick() {
                     window._userLineStatuses[i] = 'ready';
                     window._userLineSources[i] = entry.targetSource;
                     clearUserLineProgress(i);
-                    state.entries.delete(i);
+                    state.entries.delete(key);
                     changed.add(i);
                 }
             }
