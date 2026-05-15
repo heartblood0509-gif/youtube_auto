@@ -18,6 +18,21 @@ function showFriendlyError(msg) {
     alert(userMsg);
 }
 
+async function readErrorDetail(resp, fallback) {
+    try {
+        const data = await resp.clone().json();
+        if (data && data.detail) return data.detail;
+        if (data && data.message) return data.message;
+    } catch { /* Response was not JSON. */ }
+
+    try {
+        const text = await resp.text();
+        if (text) return `${fallback} (${resp.status}): ${text.slice(0, 200)}`;
+    } catch { /* Ignore body read errors. */ }
+
+    return `${fallback} (${resp.status})`;
+}
+
 // ── TTS 음성 옵션 (엔진별) ──
 const VOICE_OPTIONS = {
     typecast: [
@@ -935,8 +950,7 @@ async function confirmDraftJob() {
                 body: JSON.stringify(payload),
             });
             if (!resp.ok) {
-                const err = await resp.json();
-                throw new Error(err.detail || '영상 제작 시작 실패');
+                throw new Error(await readErrorDetail(resp, '영상 제작 시작 실패'));
             }
             window.location.href = `/static/status.html?job=${jobId}&phase=render`;
         } catch (e) {
