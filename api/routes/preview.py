@@ -597,6 +597,7 @@ async def confirm_and_render(
     print(f"[DEBUG confirm] job_id={job_id}, raw_body={body}, video_mode={video_mode}")
 
     job = get_user_job(db, job_id, _user)
+    job_dir = os.path.join(settings.STORAGE_DIR, job.id)
     if job.status not in ("preview_ready", "awaiting_confirmation"):
         raise HTTPException(status_code=400, detail=f"확정 불가 (상태: {job.status})")
     _require_generation_storage()
